@@ -98,8 +98,10 @@ def callback(a):
         value,policy = current_model(board)
         p = value.flatten().tolist(),dirichlet_noise(policy).tolist()
     except Exception as e:
+        
         print(e)
-    # print("python policy:",p[1])
+        time.sleep(5)
+    # print("pythonpolicy:",p[1])
     return p
 def print_board(b):
     s = ""
@@ -112,26 +114,29 @@ def print_board(b):
     return s
 
 
-threads=100
-iterations=1
-
+threads=1
+iterations=100
+# &iterations_per_turn,&callback,&thread_count, &concurrent_games,&total_games
+print(t.play_multiple_games(100,callback,1,1,3))
 a=[[0,0,0] for i in range(3)]
+
 # a[0][0]=1
 # print(a)
 # a[0][1]=2
-s = time.perf_counter()
-win_state = 0
-print_board(a)
-turn =1 
-while win_state==0:
-    a,win_state,policy= t.play_tic_tac_toe(a,turn,iterations,callback,threads)
-    print(policy)
-    turn=op_turn(turn)
-    print_board(a)
-
-print("time:",time.perf_counter()-s)
+# s = time.perf_counter()
+# win_state = 0
 # print_board(a)
-ti = time.perf_counter()-s
+# turn =1 
+# while win_state==0:
+    
+#     a,win_state,policy= t.play_tic_tac_toe(a,turn,iterations,callback,threads)
+#     print(policy)
+#     turn=op_turn(turn)
+#     print_board(a)
+
+# print("time:",time.perf_counter()-s)
+# # print_board(a)
+# ti = time.perf_counter()-s
 
 # a=[[0]*3]*3
 # s = time.perf_counter()
@@ -145,5 +150,5 @@ ti = time.perf_counter()-s
 #     # print_board(a)
 # # myprint("heal")
 
-print("time:",time.perf_counter()-s)
-print("saved percentage:",str(int((time.perf_counter()-s)/ti*100))+"%")
+# print("time:",time.perf_counter()-s)
+# print("saved percentage:",str(int((time.perf_counter()-s)/ti*100))+"%")

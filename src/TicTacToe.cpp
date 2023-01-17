@@ -167,13 +167,18 @@ Node::Node(TicTacToe b,Turn p,Tree* h,Action a):action(a),tree(h),visits(0){
 }
 float Node::rollout(){
 
-    Turn state = board.rollout();
-    if(state==player)
-        return 1;
-    if(state==Turn::TIE)
-        return 0;
-    return -1;
-    auto value_policy  = tree->get_policy_and_value(board,&tree->mc);
+    // Turn state = board.rollout();
+    // if(state==player)
+    //     return 1;
+    // if(state==Turn::TIE)
+    //     return 0;
+    // return -1;
+    if(board.get_win_state()!=Turn::EMPTY){
+        if(board.get_win_state()==player) return 1;
+        if(board.get_win_state()==Turn::TIE) return 0;
+        return -1;
+    }
+    auto value_policy  = tree->get_policy_and_value(board,tree->mc);
 
     // auto value_policy = make_tuple(5.0f,std::array<float,9>());
     float value = std::get<0>(value_policy); 
@@ -208,7 +213,7 @@ float Node::child_uct(int idx){
 
     float v = child->value.load()*mult;
     if(child->virtual_loss.load()!=0){
-        std::cout<<"virtual loss: "<<child->virtual_loss.load()<<endl;
+        // std::cout<<"virtual loss: "<<child->virtual_loss.load()<<endl;
     }
     float sv = visits.load(); 
     float uct = v/cv+sqrt(2*log(sv)/cv);//-child->virtual_loss.load()*tree->virtual_loss_coeff;
@@ -235,8 +240,8 @@ Node* Node::highest_utc(){
         }
 
         float v = child->value.load()*mult;
-        if(child->virtual_loss.load()!=0){
-            std::cout<<"virtual loss: "<<child->virtual_loss.load()<<endl;
+        if(child->virtual_loss.load()>10){
+            // std::cout<<"virtual loss: "<<child->virtual_loss.load()<<endl;
         }
         
         float uct = v/cv+sqrt(2*log(sv)/cv)-child->virtual_loss.load()*tree->virtual_loss_coeff;
@@ -285,7 +290,8 @@ float Node::selection(){
         return score;
     }
     
-    { 
+    if(!safe_done){
+        // cout<<"l"; 
         std::unique_lock lock(node_mutex);
         float ret_score=0;
         bool has_run = false;
@@ -294,6 +300,7 @@ float Node::selection(){
             virtual_loss--;
             
             visits++;
+            safe_done=true;
             return ret_score;
         }
     }
@@ -319,17 +326,23 @@ float Node::selection(){
     under_shared.store(false);
     return score;
 }
-Tree::Tree(TicTacToe b,Turn p,t_net_outputs net_func, PyObject* _callback): head(b,p,this,0), get_policy_and_value(net_func), callback(_callback){
+Tree::Tree(TicTacToe b,Turn p,t_net_outputs net_func, PyObject* _callback,std::shared_ptr<ModelConcurrency> model_concurrency ): head(b,p,this,0), get_policy_and_value(net_func), callback(_callback) {
+    if(model_concurrency.get()==nullptr){
+        mc = make_shared<ModelConcurrency>();
+    }else{
+        mc = model_concurrency;
+    }
 }
-void Tree::run_thread(int i){
+void Tree::run_thread(int i,std::atomic<int>* iter_count){
     srand(time(NULL));
-    for(int k =0;k<i;k++){
+    for(;iter_count->load()<i;){
         // std::cout<<k<<endl;
         head.selection();
+        iter_count->fetch_add(1);
     }
 }
 
-void send_to_model(PyObject* agent_function,ModelConcurrency* mc){
+void send_to_model(PyObject* agent_function,std::shared_ptr<ModelConcurrency> mc){
     std::vector<bool> inverts;
 
 
@@ -344,7 +357,7 @@ void send_to_model(PyObject* agent_function,ModelConcurrency* mc){
         mc->flag=!mc->flag;
         return;
     }
-    // cout<<"not zero"<<endl;
+    cout<<"batch size: "<<batch_size<<endl;
     PyGILState_STATE state;
     state = PyGILState_Ensure();
     // cout<<"ensured"<<endl;
@@ -359,12 +372,14 @@ void send_to_model(PyObject* agent_function,ModelConcurrency* mc){
     PyObject* values; //tensors
     PyObject* policies; //tensors
     PyObject* result = PyObject_CallObject(agent_function,PyTuple_Pack(1,pylist));
-    // PyErr_Occurred();
-    // if (PyErr_Occurred()) {
-        // std::cout<<"bruhh! error"<<std::endl;
-        // PyErr_Print();
+
+    Py_DECREF(pylist); 
+    PyErr_Occurred();
+    if (PyErr_Occurred()) {
+        std::cout<<"bruhh! error"<<std::endl;
+        PyErr_Print();
         PyErr_Clear(); // this will reset the error indicator so you can run Python code again
-    // } 
+    } 
     if(!PyArg_ParseTuple(result,"OO",&values,&policies)){
         cout<<"trouble parsing rip"<<endl;
     }
@@ -404,37 +419,54 @@ void send_to_model(PyObject* agent_function,ModelConcurrency* mc){
 
 }
 
-void model_thread_func(Tree* t,int delay){
+void model_thread_func(std::shared_ptr<ModelConcurrency> mc,PyObject* callback,int delay){
     int i =0;
-    while(!t->done){
+    while(!mc->done ){
         // std::cout.flush(); 
         
-        send_to_model(t->callback,&t->mc);
+        send_to_model(callback,mc);
         i++;
+        
+        
         // std::cout.flush(); 
         std::this_thread::sleep_for(std::chrono::milliseconds(delay));
     }
     std::cout<<i<<endl;
     
 }
-void Tree::run(int i, int thread_count){
+void Tree::run_dependent(int i, int thread_count,std::shared_ptr<ModelConcurrency> mc){
 
-    Py_BEGIN_ALLOW_THREADS;
+    std::atomic<int> iter_counter;
     // std::thread(&Tree::run_thread,this,i).join();
     std::vector<std::thread> threads;
-    auto model_thread =std::thread(&model_thread_func,this,1);
     for(int k =0;k<thread_count-1;k++){
-        threads.push_back(std::thread(&Tree::run_thread,this,i));
+        threads.push_back(std::thread(&Tree::run_thread,this,i,&iter_counter));
         // std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
-        std::thread(&Tree::run_thread,this,i).join();
+        std::thread(&Tree::run_thread,this,i,&iter_counter).join();
+    for(auto& t:threads){
+        t.join();
+    }
+    std::cout<<"done!"<<endl;
+}
+
+void Tree::run_independent(int i, int thread_count){
+    mc= make_shared<ModelConcurrency>();
+    std::atomic<int> iter_counter;
+    // std::thread(&Tree::run_thread,this,i).join();
+    std::vector<std::thread> threads;
+    auto model_thread =std::thread(&model_thread_func,mc,callback,3);
+    for(int k =0;k<thread_count-1;k++){
+        threads.push_back(std::thread(&Tree::run_thread,this,i,&iter_counter));
+        // std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+        std::thread(&Tree::run_thread,this,i,&iter_counter).join();
     for(auto& t:threads){
         t.join();
     }
     done=true;
     model_thread.join(); 
     std::cout<<"done!"<<endl;
-    Py_END_ALLOW_THREADS;
 }
 
 

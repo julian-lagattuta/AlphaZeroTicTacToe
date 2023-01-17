@@ -72,7 +72,7 @@ public:
     std::atomic<int> virtual_loss;
     Tree* tree;
     std::array<float,9> policy;
-
+    bool safe_done = false;
 private:
     mutable std::mutex node_mutex;
     std::atomic<bool> has_created_children;
@@ -111,6 +111,7 @@ struct ModelConcurrency{
     std::vector<TicTacToe> vec;
     SafeVector<PolicyValue> ret_values;
     bool flag=false;
+    bool done= false;
     int add_board(TicTacToe& t){
         std::unique_lock<std::mutex> lock(vec_mutex);
         vec.push_back(t);
@@ -118,22 +119,22 @@ struct ModelConcurrency{
         return vec.size()-1;
     }
 };
-typedef std::tuple<float,std::array<float,9>> (*t_net_outputs)(TicTacToe&,ModelConcurrency*);
+typedef std::tuple<float,std::array<float,9>> (*t_net_outputs)(TicTacToe&,std::shared_ptr<ModelConcurrency>);
 class Tree{
 public:
-    Tree(TicTacToe board, Turn player,t_net_outputs net_func,PyObject* callback);
-    void run(int iters,int threads);
+    Tree(TicTacToe board, Turn player,t_net_outputs net_func,PyObject* callback,std::shared_ptr<ModelConcurrency> model_concurrency={});
+    void run_dependent(int iters,int threads,std::shared_ptr<ModelConcurrency> mc);
+    void run_independent(int iters,int threads);
+    void run_thread(int i,std::atomic<int>* iter_count);
     TicTacToe make_play();
     Node head;
     t_net_outputs get_policy_and_value;
     PyObject* callback;
-    float virtual_loss_coeff=0;
-    ModelConcurrency mc;
+    float virtual_loss_coeff=0.3;
+    std::shared_ptr<ModelConcurrency> mc;
     bool done=false;
 private:
-    void run_thread(int iters);
 };
-
 using std::ostream;
 template<typename T>
 ostream& operator<< (ostream& out, const vector<T>& v) {
@@ -147,3 +148,5 @@ ostream& operator<< (ostream& out, const vector<T>& v) {
     out << "}";
     return out;
 }
+
+void model_thread_func(std::shared_ptr<ModelConcurrency> mc,PyObject* callback,int delay);
