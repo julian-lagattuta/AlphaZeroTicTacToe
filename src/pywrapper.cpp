@@ -41,8 +41,7 @@ std::tuple<float,std::array<float,9>> agent_callback(TicTacToe& board,std::share
     std::unique_lock l(mc->counter_mutex);
     mc->counter++;  
     l.unlock();
-    mc->cv.notify_all();
-
+    mc->cv.notify_all(); 
     return make_tuple(value,policy); 
 }
 template <class T, std::size_t N>
@@ -132,10 +131,10 @@ static PyObject* play_multiple_games(PyObject* self, PyObject* args){
     auto model_concurrency = std::make_shared<ModelConcurrency>();
 
     Py_BEGIN_ALLOW_THREADS;
-    auto model_thread = std::thread(&model_thread_func,model_concurrency,callback,3);
+    auto model_thread = std::thread(&model_thread_func,model_concurrency,callback,1);
     std::vector<std::thread> threads;
     auto play_game_loop =[iterations_per_turn,thread_count,callback,policies,values,boards,&list_mutex,model_concurrency,&game_counter,total_games]{
-        for(;game_counter.fetch_add(1);game_counter.load()<total_games){
+        for(;game_counter.load()<total_games;game_counter.fetch_add(1)){
             play_game(iterations_per_turn,thread_count,callback,policies,values,boards,&list_mutex,model_concurrency);
         }
     };

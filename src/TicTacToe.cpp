@@ -413,9 +413,11 @@ void send_to_model(PyObject* agent_function,std::shared_ptr<ModelConcurrency> mc
     flag_lock.unlock();
     std::unique_lock waiting_lock(mc->counter_mutex);
     auto& k = mc->counter;
-    mc->cv.wait(waiting_lock, [mc,batch_size]{return mc->counter==batch_size;});
+    auto temp_p = &mc->counter;
+    mc->cv.wait(waiting_lock, [temp_p,batch_size]{return (*temp_p)==batch_size;});
     mc->ret_values.clear();
-
+    
+    assert((*temp_p)==batch_size);
 
 }
 

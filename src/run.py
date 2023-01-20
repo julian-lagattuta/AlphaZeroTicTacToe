@@ -117,7 +117,7 @@ def print_board(b):
 threads=1
 iterations=100
 # &iterations_per_turn,&callback,&thread_count, &concurrent_games,&total_games
-print(t.play_multiple_games(100,callback,1,1,3))
+print(t.play_multiple_games(500000,callback,7,1,1))
 a=[[0,0,0] for i in range(3)]
 
 # a[0][0]=1
