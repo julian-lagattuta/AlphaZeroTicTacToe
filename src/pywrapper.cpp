@@ -1,5 +1,5 @@
 #include "TicTacToe.hpp"
-#include "Python.h"
+#include <Python.h>
 #include <iostream>
 #include <condition_variable>
 #include <tuple>
@@ -8,20 +8,19 @@
 #include <stdexcept>
 #include <exception>
 #include <typeinfo>
-
-struct __cxa_exception {
-    std::type_info *inf;
-};
-struct __cxa_eh_globals {
-    __cxa_exception *exc;
-};
-extern "C" __cxa_eh_globals* __cxa_get_globals();
-const char* what_exc() {
-    __cxa_eh_globals* eh = __cxa_get_globals();
-    if (eh && eh->exc && eh->exc->inf)
-        return eh->exc->inf->name();
-    return NULL;
-}
+// struct __cxa_exception {
+//     std::type_info *inf;
+// };
+// struct __cxa_eh_globals {
+//     __cxa_exception *exc;
+// };
+// extern "C" __cxa_eh_globals* __cxa_get_globals();
+// const char* what_exc() {
+//     __cxa_eh_globals* eh = __cxa_get_globals();
+//     if (eh && eh->exc && eh->exc->inf)
+//         return eh->exc->inf->name();
+//     return NULL;
+// }
 using namespace std;
 // SafeVector<TicTacToe> boardVector;
 std::tuple<float,std::array<float,9>> agent_callback(TicTacToe& board,std::shared_ptr<ModelConcurrency> mc){
@@ -204,17 +203,23 @@ static PyMethodDef methods[] = {
     {"play_multiple_games",play_multiple_games,METH_VARARGS,"the heck?!"},
     {NULL, NULL, 0, NULL}
 };
-static struct PyModuleDef tictactoelib={
+static struct PyModuleDef ticmod{
     PyModuleDef_HEAD_INIT,
-    "tictactoelib",
+    "ticlib",
     "A fast tic tac toe implementation",
     -1,
     methods,
+    NULL,
+    NULL,
+    NULL,
+    NULL
 
 };
-PyMODINIT_FUNC PyInit_tictactoelib(void){
-    std::set_terminate(__gnu_cxx::__verbose_terminate_handler);
+
+PyMODINIT_FUNC PyInit_ticlib(void){
+    // std::set_terminate(__gnu_cxx::__verbose_terminate_handler);
         // std::cout<<"init threads"<<endl;
     // PyImport_ImportModule("threading"),
-    return PyModule_Create(&tictactoelib);
+    // cout<<"my bruh"<<endl;
+    return PyModule_Create(&ticmod);
 }

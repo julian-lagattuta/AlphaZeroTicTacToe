@@ -1,4 +1,5 @@
 import time
+import tictactoelib.ticlib as t
 import numpy as np 
 import torch
 import torch.nn as nn
@@ -9,7 +10,6 @@ def op_turn(x):
     if x==2:
         return 1
     raise Exception("unkown turn")
-import tictactoelib as t
 a = [[0,0,0] for i in range(3)]
 
 class ResLayer(nn.Module):
