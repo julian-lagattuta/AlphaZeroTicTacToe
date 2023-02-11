@@ -115,8 +115,15 @@ struct ModelConcurrency{
     int add_board(TicTacToe& t){
         std::unique_lock<std::mutex> lock(vec_mutex);
         vec.push_back(t);
+	int idx = vec.size()-1;
         using namespace std;
-        return vec.size()-1;
+    	std::unique_lock lk(flag_mutex);
+    	bool current_flag = flag;
+	lock.unlock();
+	
+    	cv.wait(lk,[current_flag,this]{return this->flag!=current_flag;});
+	lk.unlock();
+        return idx;
     }
 };
 typedef std::tuple<float,std::array<float,9>> (*t_net_outputs)(TicTacToe&,std::shared_ptr<ModelConcurrency>);

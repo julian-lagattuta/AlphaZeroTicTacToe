@@ -1,5 +1,5 @@
 import time
-import tictactoelib.ticlib as t
+import tictactoelib as t
 import numpy as np 
 import torch
 import torch.nn as nn
@@ -78,7 +78,7 @@ class Agent(nn.Module):
         torch.save(self.state_dict(),name)
     def load(self,name):
         self.load_state_dict(torch.load(name))
-device = torch.device("cuda")
+device = torch.device("cpu")
 current_model = Agent(15,256,device) 
 current_model.to(device)
 def dirichlet_noise(p):
@@ -117,7 +117,7 @@ def print_board(b):
 threads=1
 iterations=100
 # &iterations_per_turn,&callback,&thread_count, &concurrent_games,&total_games
-print(t.play_multiple_games(500000,callback,7,1,1))
+print(t.play_multiple_games(500000,callback,20,5,5))
 a=[[0,0,0] for i in range(3)]
 
 # a[0][0]=1

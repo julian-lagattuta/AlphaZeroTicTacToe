@@ -343,11 +343,12 @@ void Tree::run_thread(int i,std::atomic<int>* iter_count){
 }
 
 void send_to_model(PyObject* agent_function,std::shared_ptr<ModelConcurrency> mc){
+
     std::vector<bool> inverts;
 
 
-    std::unique_lock <std::mutex> flag_lock(mc->flag_mutex);
     std::unique_lock <std::mutex> vec_lock(mc->vec_mutex);
+    std::unique_lock <std::mutex> flag_lock(mc->flag_mutex);
     mc->counter=0;
     
     
@@ -402,7 +403,6 @@ void send_to_model(PyObject* agent_function,std::shared_ptr<ModelConcurrency> mc
     // cout<<"real batch_size: "<<mc->vec.size()<<endl; 
     mc->vec.clear();
 
-    vec_lock.unlock();
     // cout<<mc->counter<<endl;
     mc->flag=!mc->flag;
 
