@@ -1,5 +1,9 @@
 #pragma once
 #include "Python.h"
+#include "listobject.h"
+#include <bits/iterator_concepts.h>
+#include <tuple>
+#include <functional>
 #include <memory>
 #include <stdexcept>
 #include <vector>
@@ -82,6 +86,27 @@ private:
 };
 
 
+
+template<class T>
+class function_call_wrapper;
+
+template<class R, class... Args>
+class function_call_wrapper<std::function<R(Args...)>>{
+public:
+
+    function_call_wrapper(std::function<R(Args...)> func,Args... args){
+        f = func;
+        arguments =  std::make_tuple(args...);
+    }
+    R operator()(){
+        return std::apply(f,arguments);
+    }
+
+    std::function<R(Args...)> f;
+    std::tuple<Args...> arguments;
+};
+#define f_vector(f) std::vector<function_call_wrapper<std::function<decltype(f)>>>
+
 template<typename T>
 class SafeVector{
     public:
@@ -103,6 +128,21 @@ struct PolicyValue{
     float value;
 };
 struct ModelConcurrency{
+    struct {
+        f_vector(PyList_New) list_new;
+        f_vector(PyList_Append) list_append;
+        f_vector(PyList_SetItem) list_setitem;
+        f_vector(PyList_Size) list_size;
+        std::vector<PyObject*> list_new_ret_values;
+        std::vector<long> list_size_ret_values;
+        int counter ;
+        bool flag=false;
+        std::mutex flag_mutex;
+        std::mutex vec_mutex;
+        std::condition_variable cv;
+        std::mutex cv_mutex;
+        
+    } function_wrappers;
     std::condition_variable cv;
     std::mutex counter_mutex;
     std::mutex vec_mutex;
@@ -129,7 +169,7 @@ struct ModelConcurrency{
 typedef std::tuple<float,std::array<float,9>> (*t_net_outputs)(TicTacToe&,std::shared_ptr<ModelConcurrency>);
 class Tree{
 public:
-    Tree(TicTacToe board, Turn player,t_net_outputs net_func,PyObject* callback,std::shared_ptr<ModelConcurrency> model_concurrency={});
+    Tree(TicTacToe board, Turn player,t_net_outputs net_func,PyObject* callback,bool _use_nn,std::shared_ptr<ModelConcurrency> model_concurrency={});
     void run_dependent(int iters,int threads,std::shared_ptr<ModelConcurrency> mc);
     void run_independent(int iters,int threads);
     void run_thread(int i,std::atomic<int>* iter_count);
@@ -137,9 +177,10 @@ public:
     Node head;
     t_net_outputs get_policy_and_value;
     PyObject* callback;
-    float virtual_loss_coeff=0.3;
+    float virtual_loss_coeff=1;
     std::shared_ptr<ModelConcurrency> mc;
     bool done=false;
+    bool use_nn = false;
 private:
 };
 using std::ostream;
@@ -156,4 +197,7 @@ ostream& operator<< (ostream& out, const vector<T>& v) {
     return out;
 }
 
-void model_thread_func(std::shared_ptr<ModelConcurrency> mc,PyObject* callback,int delay);
+
+void send_to_model(PyObject* agent_function,std::shared_ptr<ModelConcurrency> mc);
+
+void send_to_python(std::shared_ptr<ModelConcurrency> mc);

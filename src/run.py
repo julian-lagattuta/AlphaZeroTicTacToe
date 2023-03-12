@@ -86,6 +86,7 @@ def dirichlet_noise(p):
     return new_p
 def callback(a):
     
+    print("started callback")
     # print(a)
     # return 1,[1,2,3,4,5,6,7,8,9]
     global current_model
@@ -100,8 +101,9 @@ def callback(a):
     except Exception as e:
         
         print(e)
-        time.sleep(5)
+
     # print("pythonpolicy:",p[1])
+    print("finished callback")
     return p
 def print_board(b):
     s = ""
@@ -116,8 +118,16 @@ def print_board(b):
 
 threads=1
 iterations=100
-# &iterations_per_turn,&callback,&thread_count, &concurrent_games,&total_games
-print(t.play_multiple_games(500000,callback,20,5,5))
+# &iterations_per_turn,&callback,&thread_count, &concurrent_games,&total_games, &use_nn
+#boards, values ,policies
+boards, values, policies = t.play_multiple_games(1000,callback,10,10,100,False)
+
+
+for b,v,p in zip(boards,values,policies):
+    print_board(b) 
+    print(v)
+    print(p,sum(p))
+    print()
 a=[[0,0,0] for i in range(3)]
 
 # a[0][0]=1

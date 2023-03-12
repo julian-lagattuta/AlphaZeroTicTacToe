@@ -166,13 +166,14 @@ Node::Node(TicTacToe b,Turn p,Tree* h,Action a):action(a),tree(h),visits(0){
     // spawning_children=false;
 }
 float Node::rollout(){
-
-    // Turn state = board.rollout();
-    // if(state==player)
-    //     return 1;
-    // if(state==Turn::TIE)
-    //     return 0;
-    // return -1;
+    if(!tree->use_nn){
+        Turn state = board.rollout();
+        if(state==player)
+            return 1;
+        if(state==Turn::TIE)
+            return 0;
+        return -1;
+    }
     if(board.get_win_state()!=Turn::EMPTY){
         if(board.get_win_state()==player) return 1;
         if(board.get_win_state()==Turn::TIE) return 0;
@@ -182,7 +183,6 @@ float Node::rollout(){
 
     // auto value_policy = make_tuple(5.0f,std::array<float,9>());
     float value = std::get<0>(value_policy); 
-    // cout<<"value: "<<value<<endl;
     auto ret_policy = std::get<1>(value_policy);
     std::array<float,9> net_policy;
     
@@ -242,9 +242,15 @@ Node* Node::highest_utc(){
         float v = child->value.load()*mult;
         if(child->virtual_loss.load()>10){
             // std::cout<<"virtual loss: "<<child->virtual_loss.load()<<endl;
-        }
         
-        float uct = v/cv+sqrt(2*log(sv)/cv)-child->virtual_loss.load()*tree->virtual_loss_coeff;
+        }
+        float uct = 0;
+        if(tree->use_nn){
+            uct = v/cv+.2*policy[child->action]*sqrt(log(sv)/cv)-child->virtual_loss.load()*tree->virtual_loss_coeff;
+        }else{
+            
+            uct = v/cv+1.414*sqrt(log(sv)/cv)-child->virtual_loss.load()*tree->virtual_loss_coeff;
+        }
         // cout<<uct<<endl;
         // float uct = v/cv+.2*sqrt(log(sv+1)/cv)*policy[child->action]-virtual_loss.load()*tree->virtual_loss_coeff;
         if(uct>max_uct){
@@ -326,7 +332,7 @@ float Node::selection(){
     under_shared.store(false);
     return score;
 }
-Tree::Tree(TicTacToe b,Turn p,t_net_outputs net_func, PyObject* _callback,std::shared_ptr<ModelConcurrency> model_concurrency ): head(b,p,this,0), get_policy_and_value(net_func), callback(_callback) {
+Tree::Tree(TicTacToe b,Turn p,t_net_outputs net_func, PyObject* _callback,bool _use_nn,std::shared_ptr<ModelConcurrency> model_concurrency): head(b,p,this,0), get_policy_and_value(net_func), callback(_callback), use_nn(_use_nn) {
     if(model_concurrency.get()==nullptr){
         mc = make_shared<ModelConcurrency>();
     }else{
@@ -335,13 +341,54 @@ Tree::Tree(TicTacToe b,Turn p,t_net_outputs net_func, PyObject* _callback,std::s
 }
 void Tree::run_thread(int i,std::atomic<int>* iter_count){
     srand(time(NULL));
-    for(;iter_count->load()<i;){
-        // std::cout<<k<<endl;
+    for(;iter_count->fetch_add(1)<i;){
         head.selection();
-        iter_count->fetch_add(1);
     }
 }
+void send_to_python(std::shared_ptr<ModelConcurrency> mc){
+    auto& fw = mc->function_wrappers;
 
+    std::unique_lock<std::mutex> vec_lock(fw.vec_mutex);
+    std::unique_lock<std::mutex> flag_lock(fw.flag_mutex);
+    fw.list_new_ret_values.clear();
+    fw.list_size_ret_values.clear();
+    for(auto& f : fw.list_append){
+        f();
+    }
+    for(auto& f: fw.list_new){
+        auto pyobj = f();
+        fw.list_new_ret_values.push_back(pyobj); 
+    }
+
+    for(auto& f: fw.list_size){
+        auto pyobj = f();
+        fw.list_size_ret_values.push_back(pyobj); 
+    }
+    for(auto& f: fw.list_setitem){
+        f();
+    }
+    fw.flag = !fw.flag;
+
+    fw.list_setitem.clear();
+    fw.list_new.clear();
+    fw.list_append.clear();
+    fw.list_size.clear();
+
+    fw.cv.notify_all();
+
+
+    fw.counter =0;
+
+    flag_lock.unlock();
+    int batch_size = fw.list_size_ret_values.size()+fw.list_new_ret_values.size();
+
+    auto temp_counter = &fw.counter;
+    std::unique_lock<std::mutex> cv_lock(fw.cv_mutex);
+
+    fw.cv.wait(cv_lock,[temp_counter,batch_size]{return *temp_counter==batch_size;});
+    cv_lock.unlock();
+    
+}
 void send_to_model(PyObject* agent_function,std::shared_ptr<ModelConcurrency> mc){
 
     std::vector<bool> inverts;
@@ -420,7 +467,7 @@ void send_to_model(PyObject* agent_function,std::shared_ptr<ModelConcurrency> mc
     assert((*temp_p)==batch_size);
 
 }
-
+/*
 void model_thread_func(std::shared_ptr<ModelConcurrency> mc,PyObject* callback,int delay){
     int i =0;
     while(!mc->done ){
@@ -436,8 +483,9 @@ void model_thread_func(std::shared_ptr<ModelConcurrency> mc,PyObject* callback,i
     std::cout<<i<<endl;
     
 }
+*/
 void Tree::run_dependent(int i, int thread_count,std::shared_ptr<ModelConcurrency> mc){
-
+    try {
     std::atomic<int> iter_counter;
     // std::thread(&Tree::run_thread,this,i).join();
     std::vector<std::thread> threads;
@@ -449,9 +497,16 @@ void Tree::run_dependent(int i, int thread_count,std::shared_ptr<ModelConcurrenc
     for(auto& t:threads){
         t.join();
     }
-    std::cout<<"done!"<<endl;
-}
+    std::cout<<"done!"<<iter_counter.load()<<endl;
 
+    }catch (const std::exception &exc)
+    {
+    // catch anything thrown within try block that derives from std::exception
+        std::cerr << exc.what();
+    }
+
+    }
+/*
 void Tree::run_independent(int i, int thread_count){
     mc= make_shared<ModelConcurrency>();
     std::atomic<int> iter_counter;
@@ -470,7 +525,7 @@ void Tree::run_independent(int i, int thread_count){
     model_thread.join(); 
     std::cout<<"done!"<<endl;
 }
-
+*/
 
 TicTacToe Tree::make_play(){
     auto max_node = head.children[0].get();
