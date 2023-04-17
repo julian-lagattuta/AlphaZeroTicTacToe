@@ -1,5 +1,10 @@
-
+#include <iterator>
+#include <random>
 #include "TicTacToe.hpp" 
+#include "listobject.h"
+#include "longobject.h"
+#include "object.h"
+#include "pystate.h"
 #include <chrono>
 #include <stdexcept>
 #include <cstdlib>
@@ -12,6 +17,17 @@
 #include <condition_variable>
 
 using namespace std;
+
+
+Turn opposite_turn(Turn t){
+    if(t==Turn::X){
+        return Turn::O;
+    }if(t==Turn::O){
+        return Turn::X;
+    }
+    std::cout<<"ERROR UNKOWN TURN1!!"<<std::endl;
+    return EMPTY;
+}
 TicTacToe::TicTacToe(){
     for(int i = 0;i<3;i++){
         for(int k =0;k<3;k++){
@@ -166,7 +182,7 @@ Node::Node(TicTacToe b,Turn p,Tree* h,Action a):action(a),tree(h),visits(0){
     // spawning_children=false;
 }
 float Node::rollout(){
-    if(!tree->use_nn){
+    if(!tree->use_nn ){
         Turn state = board.rollout();
         if(state==player)
             return 1;
@@ -179,10 +195,15 @@ float Node::rollout(){
         if(board.get_win_state()==Turn::TIE) return 0;
         return -1;
     }
-    auto value_policy  = tree->get_policy_and_value(board,tree->mc);
-
+    auto value_policy  = tree->get_policy_and_value(board,tree->mc,tree->model_id);
+    
     // auto value_policy = make_tuple(5.0f,std::array<float,9>());
-    float value = std::get<0>(value_policy); 
+    float value = std::get<0>(value_policy);
+    if(player==board.turn){
+        value*=-1;
+//        cout<<"flipped value!"<<endl;
+    }
+    
     auto ret_policy = std::get<1>(value_policy);
     std::array<float,9> net_policy;
     
@@ -195,10 +216,15 @@ float Node::rollout(){
         net_policy[av[i]]=ret_policy[av[i]]; 
         sum+=ret_policy[av[i]];
     }
+    cout<<"value: "<<value<<"\npolicy: ";
     for(int i =0;i<net_policy.size();i++){
         net_policy[i]/=sum;
+        cout<<net_policy[i]<<" ";
     }
+    cout<<endl;
     policy = net_policy;
+    board.printBoard();
+    cout<<endl;
     return value;
 
     
@@ -220,6 +246,9 @@ float Node::child_uct(int idx){
     return  uct;
 }
 Node* Node::highest_utc(){
+
+    auto seed = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+    srand(seed);
     float max_uct = -INFINITY;
     auto highest_node = children[0].get();
     float sv = visits.load();
@@ -228,37 +257,47 @@ Node* Node::highest_utc(){
     float mult = board.turn!=player? -1:1;
     int idx =0 ;
     int chosen = 0;
-    // std::random_shuffle ( children.begin(), children.end() );
+    std::vector<Node*> unvisited;
+    bool found_unvisited = false;
     for(auto& child: children){
-        if(child->visits.load()==0){
-            highest_node=child.get();
-            break;
+        if(child->visits.load()==0&&!tree->use_nn ){
+            unvisited.push_back(child.get());
+            found_unvisited=true;
+            continue;
         }
+        if(found_unvisited){
+            continue;
+        }
+
         float cv = child->visits.load();
         if(cv==0){
             cv=1e-4;
         }
 
         float v = child->value.load()*mult;
-        if(child->virtual_loss.load()>10){
-            // std::cout<<"virtual loss: "<<child->virtual_loss.load()<<endl;
+        if(child->virtual_loss.load()>1){
+             std::cout<<"virtual loss: "<<child->virtual_loss.load()<<endl;
         
         }
         float uct = 0;
+
+        auto virtual_loss_value= child->virtual_loss.load()*tree->virtual_loss_coeff;
         if(tree->use_nn){
-            uct = v/cv+.2*policy[child->action]*sqrt(log(sv)/cv)-child->virtual_loss.load()*tree->virtual_loss_coeff;
+            uct = v/cv+1.5*policy[child->action]*sqrt(visits.load())/(1+child->visits)-virtual_loss_value;
         }else{
             
             uct = v/cv+1.414*sqrt(log(sv)/cv)-child->virtual_loss.load()*tree->virtual_loss_coeff;
         }
-        // cout<<uct<<endl;
-        // float uct = v/cv+.2*sqrt(log(sv+1)/cv)*policy[child->action]-virtual_loss.load()*tree->virtual_loss_coeff;
-        if(uct>max_uct){
+        // float uct = v/cv+.2*sqrt(log(sv+1)/cv)*policy[child->action]-virtual_loss.load()*tree->virtual_loss_coeff
+        if(uct>max_uct ){
             max_uct=uct;
             highest_node = child.get();
             chosen = idx;
         }
         idx++;
+    }
+    if(found_unvisited&& !tree->use_nn){
+        return unvisited.at(rand()%(unvisited.size()));
     }
     return highest_node;
 }
@@ -286,12 +325,12 @@ void Node::spawn_rollout(float* score_return,bool* has_run){
     *score_return = score;
 }
 float Node::selection(){
-    virtual_loss++;
+    virtual_loss+=tree->virtual_loss_coeff;
     auto winner = board.get_win_state();
     if(winner!=Turn::EMPTY){
         float score = rollout();
         value.fetch_add(score);
-        virtual_loss--;
+        virtual_loss-= tree->virtual_loss_coeff;
         visits++;
         return score;
     }
@@ -303,7 +342,7 @@ float Node::selection(){
         bool has_run = false;
         std::call_once(child_flag,&Node::spawn_rollout,*this,&ret_score,&has_run);
         if(has_run){
-            virtual_loss--;
+            virtual_loss-=tree->virtual_loss_coeff;
             
             visits++;
             safe_done=true;
@@ -327,17 +366,27 @@ float Node::selection(){
     auto score = highest->selection();
 
     value.fetch_add(score);
-    virtual_loss--;
+    virtual_loss-=tree->virtual_loss_coeff;
     visits++;
     under_shared.store(false);
     return score;
 }
-Tree::Tree(TicTacToe b,Turn p,t_net_outputs net_func, PyObject* _callback,bool _use_nn,std::shared_ptr<ModelConcurrency> model_concurrency): head(b,p,this,0), get_policy_and_value(net_func), callback(_callback), use_nn(_use_nn) {
+Tree::Tree(TicTacToe b,Turn p,std::shared_ptr<ModelConcurrency> model_concurrency): head(b,p,this,0), use_nn(false) {
     if(model_concurrency.get()==nullptr){
         mc = make_shared<ModelConcurrency>();
     }else{
         mc = model_concurrency;
     }
+}
+Tree::Tree(TicTacToe b,Turn p,t_net_outputs net_func, PyObject* _callback,std::shared_ptr<ModelConcurrency> model_concurrency,int _model_id): head(b,p,this,0), get_policy_and_value(net_func), callback(_callback), use_nn(true) {
+
+    if(model_concurrency.get()==nullptr){
+
+        mc = make_shared<ModelConcurrency>();
+    }else{
+        mc = model_concurrency;
+    }
+    model_id= _model_id;
 }
 void Tree::run_thread(int i,std::atomic<int>* iter_count){
     srand(time(NULL));
@@ -346,6 +395,8 @@ void Tree::run_thread(int i,std::atomic<int>* iter_count){
     }
 }
 void send_to_python(std::shared_ptr<ModelConcurrency> mc){
+
+    PyGILState_STATE state = PyGILState_Ensure(); 
     auto& fw = mc->function_wrappers;
 
     std::unique_lock<std::mutex> vec_lock(fw.vec_mutex);
@@ -367,6 +418,9 @@ void send_to_python(std::shared_ptr<ModelConcurrency> mc){
     for(auto& f: fw.list_setitem){
         f();
     }
+
+    PyGILState_Release(state);
+
     fw.flag = !fw.flag;
 
     fw.list_setitem.clear();
@@ -389,10 +443,19 @@ void send_to_python(std::shared_ptr<ModelConcurrency> mc){
     cv_lock.unlock();
     
 }
+
+void delete_pyobject(PyObject*& o){
+    if(o->ob_refcnt!=1){
+        cout<<"WARNING: DELETE PYOBJECT NOT REF CNT 1: "<<o->ob_refcnt<<endl;
+    }
+    o->ob_refcnt=1;
+    Py_DECREF(o);
+    o=nullptr;
+}
 void send_to_model(PyObject* agent_function,std::shared_ptr<ModelConcurrency> mc){
 
     std::vector<bool> inverts;
-
+    
 
     std::unique_lock <std::mutex> vec_lock(mc->vec_mutex);
     std::unique_lock <std::mutex> flag_lock(mc->flag_mutex);
@@ -405,23 +468,57 @@ void send_to_model(PyObject* agent_function,std::shared_ptr<ModelConcurrency> mc
         mc->flag=!mc->flag;
         return;
     }
-    cout<<"batch size: "<<batch_size<<endl;
     PyGILState_STATE state;
-    state = PyGILState_Ensure();
+    state=  PyGILState_Ensure();
+    cout<<"batch size: "<<batch_size<<endl;
     // cout<<"ensured"<<endl;
     // std::cout<<"here"<<endl;
     PyObject* pylist = PyList_New(mc->vec.size());
+    auto& boards = mc->vec;
     for(int i = 0;i<batch_size;i++){
-        auto& board =mc->vec[i];
-        auto invert = board.turn==Turn::O;
+        auto& board =boards[i];
+
+        
+        auto invert =board.turn==Turn::X;
+
         inverts.push_back(invert);
         PyList_SetItem(pylist,i,board.as_list(invert)); 
     }
     PyObject* values; //tensors
     PyObject* policies; //tensors
-    PyObject* result = PyObject_CallObject(agent_function,PyTuple_Pack(1,pylist));
+                        //
+    PyObject* models = PyList_New(mc->models.size());
+    int i =0;
+    for(auto& model : mc->models){
+        PyList_SetItem(models,i,model);
+        Py_INCREF(model);
+        i++;
+    }
+    assert(mc->model_ids.size()==batch_size);
+    PyObject* model_ids = PyList_New(mc->model_ids.size());
 
-    Py_DECREF(pylist); 
+    i=0;
+    for(auto id: mc->model_ids){
+        PyList_SetItem(model_ids,i,PyLong_FromLong(id));
+        i++;
+    }
+    PyObject* parameters = PyTuple_Pack(3,pylist,models,model_ids);
+
+    PyGILState_Release(state);
+
+    PyObject* result = PyObject_CallObject(agent_function,parameters);
+    
+    state = PyGILState_Ensure();
+
+    Py_DECREF(parameters);
+
+    cout<<"model ids"<<endl; 
+    delete_pyobject(model_ids);
+    cout<<"models"<<endl; 
+    delete_pyobject(models);
+    cout<<"pylist"<<endl; 
+    delete_pyobject(pylist); 
+    
     PyErr_Occurred();
     if (PyErr_Occurred()) {
         std::cout<<"bruhh! error"<<std::endl;
@@ -442,14 +539,13 @@ void send_to_model(PyObject* agent_function,std::shared_ptr<ModelConcurrency> mc
         // std::cout<<endl;
         mc->ret_values.q[i].value = PyFloat_AsDouble(PyList_GetItem(values,i));
         // cout<<mc->ret_values.q[i].value <<endl;
-        if(inverts[i]){
-            mc->ret_values.q[i].value*=-1;
-        }
     }
+    delete_pyobject(result);
+
     PyGILState_Release(state);
     // cout<<"real batch_size: "<<mc->vec.size()<<endl; 
     mc->vec.clear();
-
+    mc->model_ids.clear();
     // cout<<mc->counter<<endl;
     mc->flag=!mc->flag;
 

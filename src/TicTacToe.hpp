@@ -26,8 +26,9 @@ enum Turn{
     X=1,
     O=2,
     TIE=-1,
-    NONE=3
+    NONE=3,
 };
+
 class TicTacToe{
 public:
     TicTacToe();
@@ -143,18 +144,24 @@ struct ModelConcurrency{
         std::mutex cv_mutex;
         
     } function_wrappers;
+    std::atomic<int> winner_tally;
+    std::atomic<int> tie_tally;
+
     std::condition_variable cv;
     std::mutex counter_mutex;
     std::mutex vec_mutex;
     std::mutex flag_mutex;
     int counter;
     std::vector<TicTacToe> vec;
+    std::vector<int> model_ids;
+    std::vector<PyObject*> models;
     SafeVector<PolicyValue> ret_values;
     bool flag=false;
     bool done= false;
-    int add_board(TicTacToe& t){
+    int add_board(TicTacToe& t,int model){
         std::unique_lock<std::mutex> lock(vec_mutex);
         vec.push_back(t);
+        model_ids.push_back(model);
 	int idx = vec.size()-1;
         using namespace std;
     	std::unique_lock lk(flag_mutex);
@@ -166,10 +173,12 @@ struct ModelConcurrency{
         return idx;
     }
 };
-typedef std::tuple<float,std::array<float,9>> (*t_net_outputs)(TicTacToe&,std::shared_ptr<ModelConcurrency>);
+typedef std::tuple<float,std::array<float,9>> (*t_net_outputs)(TicTacToe&,std::shared_ptr<ModelConcurrency>,int);
 class Tree{
 public:
-    Tree(TicTacToe board, Turn player,t_net_outputs net_func,PyObject* callback,bool _use_nn,std::shared_ptr<ModelConcurrency> model_concurrency={});
+    Tree(TicTacToe b,Turn p,t_net_outputs net_func, PyObject* _callback,std::shared_ptr<ModelConcurrency> model_concurrency,int _model_id);
+
+    Tree(TicTacToe b,Turn p,std::shared_ptr<ModelConcurrency> model_concurrency);
     void run_dependent(int iters,int threads,std::shared_ptr<ModelConcurrency> mc);
     void run_independent(int iters,int threads);
     void run_thread(int i,std::atomic<int>* iter_count);
@@ -177,10 +186,11 @@ public:
     Node head;
     t_net_outputs get_policy_and_value;
     PyObject* callback;
-    float virtual_loss_coeff=1;
+    float virtual_loss_coeff=.1;
     std::shared_ptr<ModelConcurrency> mc;
     bool done=false;
     bool use_nn = false;
+    int model_id;
 private:
 };
 using std::ostream;
@@ -198,6 +208,9 @@ ostream& operator<< (ostream& out, const vector<T>& v) {
 }
 
 
-void send_to_model(PyObject* agent_function,std::shared_ptr<ModelConcurrency> mc);
 
+void send_to_model(PyObject* agent_function,std::shared_ptr<ModelConcurrency> mc);
 void send_to_python(std::shared_ptr<ModelConcurrency> mc);
+
+
+Turn opposite_turn(Turn t);
