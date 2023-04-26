@@ -1,14 +1,18 @@
 #include "TicTacToe.hpp"
+#include "ceval.h"
+#include "floatobject.h"
 #include "listobject.h"
 #include "longobject.h"
 #include "modsupport.h"
 #include "object.h"
 #include "pyerrors.h"
+#include "pystate.h"
 #include <ctime>
 #include <Python.h>
 #include <chrono>
 #include <functional>
 #include <mutex>
+#include <thread>
 #include <type_traits>
 #include <iostream>
 #include <condition_variable>
@@ -57,7 +61,103 @@ ostream& operator<<(ostream& o, const array<T, N>& arr)
     copy(arr.cbegin(), arr.cend(), ostream_iterator<T>(o, " "));
     return o;
 }
+
+long event_PyLong_AsLong(PyObject* l,std::shared_ptr<ModelConcurrency> mc){
+    
+    
+
+    auto& fw = mc->function_wrappers;
+    std::unique_lock<std::mutex> lock(fw.vec_mutex);
+     
+    mc->function_wrappers.long_aslong.push_back(function_call_wrapper<std::function<decltype(PyLong_AsLong)>>(PyLong_AsLong,l)) ;
+    auto idx = fw.long_aslong.size()-1;
+    std::unique_lock<std::mutex> flag_lock(fw.flag_mutex);
+    auto saved_flag = fw.flag;
+    lock.unlock();
+    
+    fw.cv.wait(flag_lock,[saved_flag,mc]{return saved_flag!=mc->function_wrappers.flag;});
+    flag_lock.unlock();
+
+    auto ret_value = fw.long_aslong_ret_values[idx];
+    std::unique_lock<std::mutex> cv_lock(fw.cv_mutex);
+    fw.counter++;
+    cv_lock.unlock(); 
+    fw.cv.notify_all(); 
+    return ret_value;
+
+
+}
+PyObject* event_PyFloat_FromDouble(double l,std::shared_ptr<ModelConcurrency> mc){
+    auto& fw = mc->function_wrappers;
+    std::unique_lock<std::mutex> lock(fw.vec_mutex);
+     
+    mc->function_wrappers.float_fromdouble.push_back(function_call_wrapper<std::function<decltype(PyFloat_FromDouble)>>(PyFloat_FromDouble,l)) ;
+    auto idx = fw.float_fromdouble.size()-1;
+    std::unique_lock<std::mutex> flag_lock(fw.flag_mutex);
+    auto saved_flag = fw.flag;
+    lock.unlock();
+    
+    fw.cv.wait(flag_lock,[saved_flag,mc]{return saved_flag!=mc->function_wrappers.flag;});
+    flag_lock.unlock();
+
+    auto ret_value = fw.float_fromdouble_ret_values[idx];
+    std::unique_lock<std::mutex> cv_lock(fw.cv_mutex);
+    fw.counter++;
+    cv_lock.unlock(); 
+    fw.cv.notify_all(); 
+    return ret_value;
+
+
+}
+PyObject* event_PyLong_FromLong(long l,std::shared_ptr<ModelConcurrency> mc){
+
+
+    auto& fw = mc->function_wrappers;
+    std::unique_lock<std::mutex> lock(fw.vec_mutex);
+     
+    mc->function_wrappers.long_fromlong.push_back(function_call_wrapper<std::function<decltype(PyLong_FromLong)>>(PyLong_FromLong,l)) ;
+    auto idx = fw.long_fromlong.size()-1;
+    std::unique_lock<std::mutex> flag_lock(fw.flag_mutex);
+    auto saved_flag = fw.flag;
+    lock.unlock();
+    
+    fw.cv.wait(flag_lock,[saved_flag,mc]{return saved_flag!=mc->function_wrappers.flag;});
+    flag_lock.unlock();
+
+    auto ret_value = fw.long_fromlong_ret_values[idx];
+    std::unique_lock<std::mutex> cv_lock(fw.cv_mutex);
+    fw.counter++;
+    cv_lock.unlock(); 
+    fw.cv.notify_all(); 
+    return ret_value;
+
+
+}
+int event_PyList_Size(PyObject* list,std::shared_ptr<ModelConcurrency> mc){
+
+    auto& fw = mc->function_wrappers;
+    std::unique_lock<std::mutex> lock(fw.vec_mutex);
+     
+    mc->function_wrappers.list_size.push_back(function_call_wrapper<std::function<decltype(PyList_Size)>>(PyList_Size,list)) ;
+    auto idx = fw.list_size.size()-1;
+    std::unique_lock<std::mutex> flag_lock(fw.flag_mutex);
+    auto saved_flag = fw.flag;
+    lock.unlock();
+    
+    fw.cv.wait(flag_lock,[saved_flag,mc]{return saved_flag!=mc->function_wrappers.flag;});
+    flag_lock.unlock();
+
+    auto ret_value = fw.list_size_ret_values[idx];
+    std::unique_lock<std::mutex> cv_lock(fw.cv_mutex);
+    fw.counter++;
+    cv_lock.unlock(); 
+    fw.cv.notify_all(); 
+    return ret_value;
+
+
+}
 void event_PyList_Append(PyObject* list,PyObject* o ,std::shared_ptr<ModelConcurrency> mc){
+
     auto& fw = mc->function_wrappers;
     std::unique_lock<std::mutex> lock(fw.vec_mutex);
     mc->function_wrappers.list_append.push_back(function_call_wrapper<std::function<decltype(PyList_Append)>>(PyList_Append,list,o)) ;
@@ -82,6 +182,7 @@ void event_PyList_SetItem(PyObject* list,int index,PyObject* o ,std::shared_ptr<
 
 }
 PyObject* event_PyList_New(int i,std::shared_ptr<ModelConcurrency> mc){
+
     auto& fw = mc->function_wrappers;
     std::unique_lock<std::mutex> lock(fw.vec_mutex);
      
@@ -115,28 +216,40 @@ TicTacToe list_to_board(PyObject* board_list){
     }
     return t;
 }
+TicTacToe list_to_board(PyObject* board_list,std::shared_ptr<ModelConcurrency> mc){
+
+    TicTacToe t;
+    
+    for(auto y =0;y<3;y++){
+        PyObject* row =PyList_GetItem(board_list,y);
+        for(auto x= 0;x<3;x++){
+                t.set_idx({x,y}, static_cast<Turn>(event_PyLong_AsLong(PyList_GetItem(row,x),mc)));
+        }
+    }
+    return t;
+}
 PyObject* board_to_list(TicTacToe& board,bool invert,std::shared_ptr<ModelConcurrency> mc){
     PyObject* new_list =event_PyList_New(3,mc);
     for(int y =0;y<3;y++){
-        auto line = PyList_New(3);
+        auto line = event_PyList_New(3,mc);
         PyList_SetItem(new_list,y,line);
         for(int x=0;x<3;x++){
             auto p = board.get_idx({x,y});
             if(invert){ 
                 if(p==Turn::X){
 
-                    event_PyList_SetItem(line,x,PyLong_FromLong(Turn::O),mc);
+                    event_PyList_SetItem(line,x,event_PyLong_FromLong(Turn::O,mc),mc);
                 }else if(p==Turn::O){
 
-                    event_PyList_SetItem(line,x,PyLong_FromLong(Turn::X),mc);
+                    event_PyList_SetItem(line,x,event_PyLong_FromLong(Turn::X,mc),mc);
                 }else{
 
-                    event_PyList_SetItem(line,x,PyLong_FromLong(p),mc);
+                    event_PyList_SetItem(line,x,event_PyLong_FromLong(p,mc),mc);
                 }
 
             }else{
 
-                    event_PyList_SetItem(line,x,PyLong_FromLong(p),mc);
+                    event_PyList_SetItem(line,x,event_PyLong_FromLong(p,mc),mc);
             }
         }
     }
@@ -148,7 +261,7 @@ void play_game(bool one_turn, int iterations_per_turn,int threads,bool return_la
 
 
     if(one_turn){
-        board = list_to_board(starting_position); 
+        board = list_to_board(starting_position,mc); 
         board.turn = static_cast<Turn>(starting_turn);
     }
     std::vector<int> board_idxs;
@@ -156,29 +269,28 @@ void play_game(bool one_turn, int iterations_per_turn,int threads,bool return_la
     std::unique_lock<std::mutex> policies_lock(*list_mutex);
 
     bool inverted = Turn::X==board.turn;
-
-    PyObject* board_list = board.as_list(inverted);
+    PyObject* board_list = board_to_list(board, inverted, mc);
     event_PyList_Append(boards,board_list,mc);
     
-    Py_DECREF(board_list);
-    auto py_turn = PyLong_FromLong(static_cast<int>(opposite_turn(board.turn)));
+    f_Py_DECREF(board_list,mc);
+    auto py_turn = event_PyLong_FromLong(static_cast<int>(opposite_turn(board.turn)),mc);
     inverts.push_back(inverted);
     event_PyList_Append(turns,py_turn,mc);
     
-    Py_DECREF(py_turn);
+    f_Py_DECREF(py_turn,mc);
     
-    auto py_value = PyLong_FromLong(0);
+    auto py_value = event_PyLong_FromLong(0,mc);
     event_PyList_Append(values,py_value,mc);
 
-    Py_DECREF(py_value);
+    f_Py_DECREF(py_value,mc);
     
-    auto py_zero = PyLong_FromLong(0);
+    auto py_zero = event_PyLong_FromLong(0,mc);
     event_PyList_Append(is_terminals,py_zero,mc);
 
-    Py_DECREF(py_zero);
+    f_Py_DECREF(py_zero,mc);
 
 
-    board_idxs.push_back(PyList_Size(values)-1);
+    board_idxs.push_back(event_PyList_Size(values,mc)-1);
     
 
     policies_lock.unlock();
@@ -204,40 +316,40 @@ void play_game(bool one_turn, int iterations_per_turn,int threads,bool return_la
 
         PyObject* policy_list =event_PyList_New(9,mc);
         for(int i = 0;i<9;i++){
-            event_PyList_SetItem(policy_list,i,PyFloat_FromDouble(0),mc);
+            event_PyList_SetItem(policy_list,i,event_PyFloat_FromDouble(0,mc),mc);
         }
-        int sum= 0
+        int sum= 0;
         for(int i=0;i<t.head.children.size();i++){
             // cout<<t.head.children[i]->value.load()/t.head.children[i]->visits.load()<<" "<<t.head.children[i]->visits.load()<<", ";
             sum+=t.head.children[i]->visits.load();
-            PyList_SetItem(policy_list,t.head.children[i]->action,PyFloat_FromDouble(float(t.head.children[i]->visits.load())/float(iterations_per_turn-1)));
+            PyList_SetItem(policy_list,t.head.children[i]->action,event_PyFloat_FromDouble(float(t.head.children[i]->visits.load())/float(iterations_per_turn-1),mc));
         }
         cout<<"total iterations: "<<sum<<endl;
 
         event_PyList_Append(policies,policy_list,mc);
-        Py_DECREF(policy_list);
+        f_Py_DECREF(policy_list,mc);
 
         if(return_last_move ||  move.get_win_state()==Turn::EMPTY){
             bool inverted = move.turn==Turn::X;
             PyObject* board_as_list= board_to_list(move,false,mc);
             
             event_PyList_Append(boards,board_as_list,mc);
-            Py_DECREF(board_as_list);
+            f_Py_DECREF(board_as_list,mc);
             
-            py_turn = PyLong_FromLong(static_cast<int>(board.turn));
+            py_turn = event_PyLong_FromLong(static_cast<int>(board.turn),mc);
             event_PyList_Append(turns,py_turn,mc);
     
-            Py_DECREF(py_turn);
+            f_Py_DECREF(py_turn,mc);
 
-            py_zero  = PyLong_FromLong(0);
+            py_zero  = event_PyLong_FromLong(0,mc);
             event_PyList_Append(values,py_zero,mc);
 
-            event_PyList_Append(is_terminals,PyLong_FromLong(0),mc);
+            event_PyList_Append(is_terminals,event_PyLong_FromLong(0,mc),mc);
 
-            Py_DECREF(py_zero);
+            f_Py_DECREF(py_zero,mc);
 
             inverts.push_back(inverted);
-            board_idxs.push_back(PyList_Size(values)-1);
+            board_idxs.push_back(event_PyList_Size(values,mc)-1);
 
 
         }
@@ -261,13 +373,17 @@ void play_game(bool one_turn, int iterations_per_turn,int threads,bool return_la
     int i =0;
     for(auto idx:board_idxs){
         auto value = inverts.at(i) ? o_value: x_value;
-        event_PyList_SetItem(values,idx,PyFloat_FromDouble(value),mc);
+        event_PyList_SetItem(values,idx,event_PyFloat_FromDouble(value,mc),mc);
         i++;
     }
-    event_PyList_SetItem(is_terminals,board_idxs.at(board_idxs.size()-1),PyLong_FromLong(winner),mc);
+    event_PyList_SetItem(is_terminals,board_idxs.at(board_idxs.size()-1),event_PyLong_FromLong(winner,mc),mc);
     if(board_idxs.size()>1 && return_last_move)
-        event_PyList_SetItem(is_terminals,board_idxs[board_idxs.size()-2],PyLong_FromLong(1),mc);
+        event_PyList_SetItem(is_terminals,board_idxs[board_idxs.size()-2],event_PyLong_FromLong(1,mc),mc);
 
+}
+void test_func(){
+    auto a= PyGILState_Ensure(); 
+    PyGILState_Release(a);
 }
 static PyObject* play_multiple_games(PyObject* self, PyObject* args){
     
@@ -288,7 +404,6 @@ static PyObject* play_multiple_games(PyObject* self, PyObject* args){
 
         return NULL;
     }
-
     PyObject* model1=  arg_model1;
     PyObject* model2 = arg_model2==Py_None ? model1 : arg_model2;
     cout<<"using use_nn "<<use_nn_<<endl;
@@ -325,7 +440,12 @@ static PyObject* play_multiple_games(PyObject* self, PyObject* args){
     int futures_left = futures.size();
     while(!break_while){
         send_to_model(callback,model_concurrency);
-        send_to_python(model_concurrency); 
+        while(send_to_python(model_concurrency)){
+            int delay_timer = 50;
+            while(send_to_python(model_concurrency));
+            while(--delay_timer);
+            cout<<"b";
+        }
         if(use_nn_){
             if(futures_left==1){
                 std::this_thread::sleep_for(1ms);
@@ -391,16 +511,16 @@ static struct PyModuleDef ticmod{
     NULL
 
 };
-
 PyMODINIT_FUNC PyInit_tictactoelib(void){
     // std::set_terminate(__gnu_cxx::__verbose_terminate_handler);
         // std::cout<<"init threads"<<endl;
     // PyImport_ImportModule("threading"),
     // cout<<"my bruh"<<endl;
+
+
     if (!PyEval_ThreadsInitialized())
     {
         PyEval_InitThreads();
     }
-
     return PyModule_Create(&ticmod);
 }

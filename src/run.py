@@ -161,14 +161,16 @@ def callback(_data,models,_model_ids):
     # print(len(a))
     # print(a)
 
-    
     try:
+        print("CALLBACK")
+        i=0 
+        """
         fake_policies= []
         fake_values = []
         for i in range(len(_data)):
             fake_policies.append([1/9]*9)
             fake_values.append(1)
-        print("CALLBACK")
+        """
         data=  torch.tensor(_data) 
         print("a")
         values = torch.zeros((len(data)),1)
@@ -382,7 +384,7 @@ def train(self_learn: bool,iterations,games_at_once,threads,mem_size):
         for epoch_idx in range(3):
             print(f"epoch {epoch_idx+1}")
             
-            data_loader = torch.utils.data.DataLoader(memory_dataset,batch_size=8,pin_memory=False,shuffle=True)
+            data_loader = torch.utils.data.DataLoader(memory_dataset,batch_size=64,pin_memory=False,shuffle=True)
             print("dataset")
             print(memory_dataset[1])
 
@@ -405,16 +407,15 @@ def train(self_learn: bool,iterations,games_at_once,threads,mem_size):
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(current_model.parameters(),max_norm=1)
                 optim.step()
-                0/0
             print(loss)
             print("not !!!saving")
             print(current_model)
             current_model.save("cmodel")
             print("saved")
         a=[[0,0,0] for i in range(3)]
-#play(5000,25,False)
-train(True,100,100,100,3000)
-#train(True,100,25,5,1000)
+play(25,5,True)
+#train(False,50,500,1,45000)
+#train(True,1025,5,1000)
 0/0
 t = DequeDataset(3,(1,),(2,))
 arr = (torch.tensor([[1]]),torch.tensor([[2,3]]))

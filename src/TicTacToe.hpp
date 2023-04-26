@@ -1,6 +1,9 @@
 #pragma once
+#include <iostream>
 #include "Python.h"
+#include "floatobject.h"
 #include "listobject.h"
+#include "pystate.h"
 #include <bits/iterator_concepts.h>
 #include <tuple>
 #include <functional>
@@ -29,6 +32,32 @@ enum Turn{
     NONE=3,
 };
 
+class PyGIL{
+    public:
+    PyGIL(){
+        state= PyGILState_Ensure();
+    }
+    PyGIL(PyGILState_STATE _state){
+        state=  _state;
+    }
+    ~PyGIL(){
+        using namespace std;
+        if(!moved){
+            cout<<"freed"<<endl;
+            PyGILState_Release(state);
+        }else{
+            cout<<"not freed"<<endl;
+        }
+    }
+    PyGIL(PyGIL& g)=delete;
+    PyGIL(PyGIL&& gil){
+        gil.moved = true;
+        state = gil.state;
+    }
+    private:
+        PyGILState_STATE state;
+        bool moved = false;
+};
 class TicTacToe{
 public:
     TicTacToe();
@@ -128,13 +157,23 @@ struct PolicyValue{
     std::array<float,9> policy;
     float value;
 };
+
+
+void function_Py_DECREF(PyObject* o);
 struct ModelConcurrency{
     struct {
         f_vector(PyList_New) list_new;
         f_vector(PyList_Append) list_append;
         f_vector(PyList_SetItem) list_setitem;
         f_vector(PyList_Size) list_size;
+        f_vector(function_Py_DECREF) list_decref;
+        f_vector(PyLong_FromLong) long_fromlong;
+        f_vector(PyFloat_FromDouble) float_fromdouble;
+        f_vector(PyLong_AsLong) long_aslong;
         std::vector<PyObject*> list_new_ret_values;
+        std::vector<PyObject*> long_fromlong_ret_values;
+        std::vector<PyObject*> float_fromdouble_ret_values;
+        std::vector<long> long_aslong_ret_values;
         std::vector<long> list_size_ret_values;
         int counter ;
         bool flag=false;
@@ -210,7 +249,9 @@ ostream& operator<< (ostream& out, const vector<T>& v) {
 
 
 void send_to_model(PyObject* agent_function,std::shared_ptr<ModelConcurrency> mc);
-void send_to_python(std::shared_ptr<ModelConcurrency> mc);
+bool send_to_python(std::shared_ptr<ModelConcurrency> mc);
 
 
 Turn opposite_turn(Turn t);
+
+void f_Py_DECREF(PyObject* o,std::shared_ptr<ModelConcurrency> mc);

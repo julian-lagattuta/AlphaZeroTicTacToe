@@ -15,10 +15,27 @@
 #include <mutex>
 #include <queue>
 #include <condition_variable>
-
 using namespace std;
+void function_Py_DECREF(PyObject* o){
+    Py_DECREF(o);
+    cout<<"decremented"<<endl;
+}
 
+void f_Py_DECREF(PyObject* o ,std::shared_ptr<ModelConcurrency> mc){
 
+    
+
+    auto& fw = mc->function_wrappers;
+    std::unique_lock<std::mutex> lock(fw.vec_mutex);
+    mc->function_wrappers.list_decref.push_back(function_call_wrapper<std::function<decltype(function_Py_DECREF)>>(function_Py_DECREF,o)) ;
+    std::unique_lock<std::mutex> flag_lock(fw.flag_mutex);
+    auto saved_flag = fw.flag;
+    lock.unlock();
+    
+    fw.cv.wait(flag_lock,[saved_flag,mc]{return saved_flag!=mc->function_wrappers.flag;});
+    flag_lock.unlock();
+
+}
 Turn opposite_turn(Turn t){
     if(t==Turn::X){
         return Turn::O;
@@ -146,7 +163,7 @@ Turn TicTacToe::rollout(){
 }
 
 PyObject* TicTacToe::as_list(bool invert){
-
+    auto state =PyGILState_Ensure();
     PyObject* new_list = PyList_New(3);
     for(int y =0;y<3;y++){
         auto line = PyList_New(3);
@@ -394,16 +411,31 @@ void Tree::run_thread(int i,std::atomic<int>* iter_count){
         head.selection();
     }
 }
-void send_to_python(std::shared_ptr<ModelConcurrency> mc){
+bool send_to_python(std::shared_ptr<ModelConcurrency> mc){
 
     PyGILState_STATE state = PyGILState_Ensure(); 
     auto& fw = mc->function_wrappers;
 
     std::unique_lock<std::mutex> vec_lock(fw.vec_mutex);
     std::unique_lock<std::mutex> flag_lock(fw.flag_mutex);
+
+
+
     fw.list_new_ret_values.clear();
+    fw.long_fromlong_ret_values.clear();
+    fw.long_aslong_ret_values.clear();
+    fw.float_fromdouble_ret_values.clear();
     fw.list_size_ret_values.clear();
+
+    if(fw.list_append.size()+fw.list_size.size()+fw.list_setitem.size()+fw.list_new.size()+fw.list_decref.size()+fw.long_fromlong.size()+fw.long_aslong.size()+fw.float_fromdouble.size()==0){
+        PyGILState_Release(state);
+        return false;
+    }
+
     for(auto& f : fw.list_append){
+        f();
+    }
+    for(auto& f: fw.list_decref){
         f();
     }
     for(auto& f: fw.list_new){
@@ -411,6 +443,18 @@ void send_to_python(std::shared_ptr<ModelConcurrency> mc){
         fw.list_new_ret_values.push_back(pyobj); 
     }
 
+    for(auto& f: fw.float_fromdouble){
+        auto pyobj = f();
+        fw.float_fromdouble_ret_values.push_back(pyobj); 
+    }
+    for(auto& f: fw.long_fromlong){
+        auto pyobj = f();
+        fw.long_fromlong_ret_values.push_back(pyobj); 
+    }
+    for(auto& f: fw.long_aslong){
+        auto pyobj = f();
+        fw.long_aslong_ret_values.push_back(pyobj); 
+    }
     for(auto& f: fw.list_size){
         auto pyobj = f();
         fw.list_size_ret_values.push_back(pyobj); 
@@ -427,20 +471,25 @@ void send_to_python(std::shared_ptr<ModelConcurrency> mc){
     fw.list_new.clear();
     fw.list_append.clear();
     fw.list_size.clear();
-
-    fw.cv.notify_all();
-
+    fw.list_decref.clear();
+    fw.long_fromlong.clear();
+    fw.long_aslong.clear();
+    fw.float_fromdouble.clear();
 
     fw.counter =0;
 
+    int batch_size = fw.list_size_ret_values.size()+fw.list_new_ret_values.size()+fw.long_aslong_ret_values.size()+fw.long_fromlong_ret_values.size()+fw.float_fromdouble_ret_values.size();
+    fw.cv.notify_all();
+
+
+
     flag_lock.unlock();
-    int batch_size = fw.list_size_ret_values.size()+fw.list_new_ret_values.size();
 
     auto temp_counter = &fw.counter;
     std::unique_lock<std::mutex> cv_lock(fw.cv_mutex);
-
     fw.cv.wait(cv_lock,[temp_counter,batch_size]{return *temp_counter==batch_size;});
     cv_lock.unlock();
+    return true;
     
 }
 
