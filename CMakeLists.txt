@@ -6,7 +6,7 @@ set(SOURCES
     src/TicTacToe.cpp
     src/pywrapper.cpp
 )
-
+#add_compile_definitions(DEBUG)
 
 # Change the include directory to your python include directory
 include_directories( /usr/include/python3.8/)

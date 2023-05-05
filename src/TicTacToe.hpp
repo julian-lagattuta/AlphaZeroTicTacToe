@@ -15,6 +15,9 @@
 #include <atomic>
 #include <shared_mutex>
 #include <mutex>
+
+
+
 using std::shared_ptr;
 using std::vector;
 
@@ -195,12 +198,14 @@ struct ModelConcurrency{
     std::vector<int> model_ids;
     std::vector<PyObject*> models;
     SafeVector<PolicyValue> ret_values;
+    std::vector<float> alphas;
     bool flag=false;
     bool done= false;
-    int add_board(TicTacToe& t,int model){
+    int add_board(TicTacToe& t,int model,float alpha){
         std::unique_lock<std::mutex> lock(vec_mutex);
         vec.push_back(t);
         model_ids.push_back(model);
+        alphas.push_back(alpha);
 	int idx = vec.size()-1;
         using namespace std;
     	std::unique_lock lk(flag_mutex);
@@ -212,7 +217,7 @@ struct ModelConcurrency{
         return idx;
     }
 };
-typedef std::tuple<float,std::array<float,9>> (*t_net_outputs)(TicTacToe&,std::shared_ptr<ModelConcurrency>,int);
+typedef std::tuple<float,std::array<float,9>> (*t_net_outputs)(TicTacToe&,std::shared_ptr<ModelConcurrency>,int,float);
 class Tree{
 public:
     Tree(TicTacToe b,Turn p,t_net_outputs net_func, PyObject* _callback,std::shared_ptr<ModelConcurrency> model_concurrency,int _model_id);
@@ -230,6 +235,7 @@ public:
     bool done=false;
     bool use_nn = false;
     int model_id;
+    float exploration_constant = 1.414;
 private:
 };
 using std::ostream;

@@ -1,6 +1,7 @@
 #include <iterator>
 #include <random>
 #include "TicTacToe.hpp" 
+#include "floatobject.h"
 #include "listobject.h"
 #include "longobject.h"
 #include "object.h"
@@ -212,7 +213,8 @@ float Node::rollout(){
         if(board.get_win_state()==Turn::TIE) return 0;
         return -1;
     }
-    auto value_policy  = tree->get_policy_and_value(board,tree->mc,tree->model_id);
+    float alpha = &tree->head==this? 1: .01; 
+    auto value_policy  = tree->get_policy_and_value(board,tree->mc,tree->model_id,alpha);
     
     // auto value_policy = make_tuple(5.0f,std::array<float,9>());
     float value = std::get<0>(value_policy);
@@ -233,15 +235,21 @@ float Node::rollout(){
         net_policy[av[i]]=ret_policy[av[i]]; 
         sum+=ret_policy[av[i]];
     }
+#ifdef DEBUG
     cout<<"value: "<<value<<"\npolicy: ";
+#endif
     for(int i =0;i<net_policy.size();i++){
         net_policy[i]/=sum;
+#ifdef DEBUG
         cout<<net_policy[i]<<" ";
+#endif
     }
+#ifdef DEBUG
     cout<<endl;
-    policy = net_policy;
     board.printBoard();
     cout<<endl;
+#endif
+    policy = net_policy;
     return value;
 
     
@@ -300,10 +308,10 @@ Node* Node::highest_utc(){
 
         auto virtual_loss_value= child->virtual_loss.load()*tree->virtual_loss_coeff;
         if(tree->use_nn){
-            uct = v/cv+1.5*policy[child->action]*sqrt(visits.load())/(1+child->visits)-virtual_loss_value;
+            uct = v/cv+tree->exploration_constant*policy[child->action]*sqrt(visits.load())/(1+child->visits)-virtual_loss_value;
         }else{
             
-            uct = v/cv+1.414*sqrt(log(sv)/cv)-child->virtual_loss.load()*tree->virtual_loss_coeff;
+            uct = v/cv+tree->exploration_constant*sqrt(log(sv)/cv)-child->virtual_loss.load()*tree->virtual_loss_coeff;
         }
         // float uct = v/cv+.2*sqrt(log(sv+1)/cv)*policy[child->action]-virtual_loss.load()*tree->virtual_loss_coeff
         if(uct>max_uct ){
@@ -545,13 +553,19 @@ void send_to_model(PyObject* agent_function,std::shared_ptr<ModelConcurrency> mc
     }
     assert(mc->model_ids.size()==batch_size);
     PyObject* model_ids = PyList_New(mc->model_ids.size());
+    PyObject* alphas= PyList_New(mc->alphas.size());
 
     i=0;
     for(auto id: mc->model_ids){
         PyList_SetItem(model_ids,i,PyLong_FromLong(id));
         i++;
     }
-    PyObject* parameters = PyTuple_Pack(3,pylist,models,model_ids);
+    i=0;
+    for(auto alpha: mc->alphas){
+        PyList_SetItem(alphas, i, PyFloat_FromDouble(alpha));
+        i++;
+    }
+    PyObject* parameters = PyTuple_Pack(4,pylist,models,model_ids,alphas);
 
     PyGILState_Release(state);
 
@@ -567,6 +581,8 @@ void send_to_model(PyObject* agent_function,std::shared_ptr<ModelConcurrency> mc
     delete_pyobject(models);
     cout<<"pylist"<<endl; 
     delete_pyobject(pylist); 
+
+    Py_DECREF(alphas);
     
     PyErr_Occurred();
     if (PyErr_Occurred()) {
@@ -595,6 +611,7 @@ void send_to_model(PyObject* agent_function,std::shared_ptr<ModelConcurrency> mc
     // cout<<"real batch_size: "<<mc->vec.size()<<endl; 
     mc->vec.clear();
     mc->model_ids.clear();
+    mc->alphas.clear();
     // cout<<mc->counter<<endl;
     mc->flag=!mc->flag;
 

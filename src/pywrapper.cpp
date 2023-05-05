@@ -6,6 +6,7 @@
 #include "modsupport.h"
 #include "object.h"
 #include "pyerrors.h"
+#include "pyport.h"
 #include "pystate.h"
 #include <ctime>
 #include <Python.h>
@@ -39,8 +40,8 @@ using namespace std;
 
 
 // SafeVector<TicTacToe> boardVector;
-std::tuple<float,std::array<float,9>> agent_callback(TicTacToe& board,std::shared_ptr<ModelConcurrency> mc,int model_id){
-    int idx = mc->add_board(board,model_id);    
+std::tuple<float,std::array<float,9>> agent_callback(TicTacToe& board,std::shared_ptr<ModelConcurrency> mc,int model_id,float alpha){
+    int idx = mc->add_board(board,model_id,alpha);    
 
     
     
@@ -255,7 +256,7 @@ PyObject* board_to_list(TicTacToe& board,bool invert,std::shared_ptr<ModelConcur
     }
     return new_list;
 }
-void play_game(bool one_turn, int iterations_per_turn,int threads,bool return_last_move,PyObject* callback,PyObject* policies,PyObject* values,PyObject* boards,PyObject* turns,PyObject* is_terminals,std::mutex* list_mutex,std::shared_ptr<ModelConcurrency> mc,bool use_nn,PyObject* starting_position,int starting_turn){
+void play_game(bool one_turn, int iterations_per_turn,int threads,bool return_last_move,PyObject* callback,PyObject* policies,PyObject* values,PyObject* boards,PyObject* turns,PyObject* is_terminals,std::mutex* list_mutex,std::shared_ptr<ModelConcurrency> mc,bool use_nn,PyObject* starting_position,int starting_turn,float exploration_constant){
     TicTacToe board = TicTacToe();
 
 
@@ -301,6 +302,8 @@ void play_game(bool one_turn, int iterations_per_turn,int threads,bool return_la
     using std::cout;
     do{
         Tree t(board,board.turn,agent_callback,callback,mc,model_id);
+
+        t.exploration_constant = exploration_constant;
         t.use_nn = use_nn;
         t.run_dependent(iterations_per_turn,threads,mc);
 
@@ -399,7 +402,9 @@ static PyObject* play_multiple_games(PyObject* self, PyObject* args){
     int use_nn_;
     int one_turn;
     int starting_turn;
-    if(!PyArg_ParseTuple(args,"OOnOnnnpppOl",&arg_model1,&arg_model2,&iterations_per_turn,&callback,&thread_count, &concurrent_games,&total_games,&use_nn_,&return_last_move,&one_turn,&starting_position,&starting_turn)){
+    float exploration_constant;
+
+    if(!PyArg_ParseTuple(args,"OOnOnnnpppOlf",&arg_model1,&arg_model2,&iterations_per_turn,&callback,&thread_count, &concurrent_games,&total_games,&use_nn_,&return_last_move,&one_turn,&starting_position,&starting_turn,&exploration_constant)){
 
 
         return NULL;
@@ -427,9 +432,9 @@ static PyObject* play_multiple_games(PyObject* self, PyObject* args){
     model_concurrency->models.push_back(model2);
     
     std::vector<std::future<void>> futures;
-    auto play_game_loop =[iterations_per_turn,thread_count,callback,policies,values,boards,&list_mutex,model_concurrency,&game_counter,total_games,use_nn_,turns,return_last_move,is_terminals,one_turn,starting_position,starting_turn,model_ids](int model_id){
+    auto play_game_loop =[iterations_per_turn,thread_count,callback,policies,values,boards,&list_mutex,model_concurrency,&game_counter,total_games,use_nn_,turns,return_last_move,is_terminals,one_turn,starting_position,starting_turn,model_ids,exploration_constant](int model_id){
         for(;game_counter.fetch_add(1)<total_games;){
-            play_game(one_turn,iterations_per_turn,thread_count,return_last_move,callback,policies,values,boards,turns,is_terminals,&list_mutex,model_concurrency,use_nn_,starting_position,starting_turn);
+            play_game(one_turn,iterations_per_turn,thread_count,return_last_move,callback,policies,values,boards,turns,is_terminals,&list_mutex,model_concurrency,use_nn_,starting_position,starting_turn,exploration_constant);
         }
     };
 
@@ -441,10 +446,12 @@ static PyObject* play_multiple_games(PyObject* self, PyObject* args){
     while(!break_while){
         send_to_model(callback,model_concurrency);
         while(send_to_python(model_concurrency)){
-            int delay_timer = 50;
-            while(send_to_python(model_concurrency));
+            volatile int delay_timer = 1000;
+            while(send_to_python(model_concurrency)){
+                volatile int second_timer = 1000;
+                while(--second_timer);
+            }
             while(--delay_timer);
-            cout<<"b";
         }
         if(use_nn_){
             if(futures_left==1){

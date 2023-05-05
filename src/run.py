@@ -8,7 +8,7 @@ import torch.nn as nn
 from torch.distributions import Categorical
 from copy import deepcopy
 import tracemalloc
-
+import argparse
 
 O = 2
 NONE=3
@@ -147,13 +147,22 @@ class DequeDataset(torch.utils.data.Dataset):
         
         self.size= min(self.size+batch_size,self.max_buffer_size)
         
-def dirichlet_noise(p):
+def dirichlet_noise(p,alphas):
     return p
-    new_p = .75*p.cpu().detach().numpy()+ .25*np.random.dirichlet(np.full((p.shape[1],),1),size=p.shape[0])
-    return new_p
+    possible_alphas =torch.unique(alphas) 
+    noised = torch.zeros(p.shape)
+    for alpha in possible_alphas:
+        idx_by_model = torch.masked_select(torch.arange(p.shape[0]),alphas == alpha).long()
+
+        if len(idx_by_model)==0:
+            continue
+        datas = p[idx_by_model] 
+        new_p = .75*datas.cpu().detach().numpy()+ .25*np.random.dirichlet(np.full((datas.shape[1],),alpha),size=datas.shape[0])
+        noised[idx_by_model] = torch.tensor(new_p,dtype=torch.float32)
+    return noised
 
 
-def callback(_data,models,_model_ids):
+def callback(_data,models,_model_ids,_alphas):
     
     # print(a)
     # return 1,[1,2,3,4,5,6,7,8,9]
@@ -172,18 +181,20 @@ def callback(_data,models,_model_ids):
             fake_values.append(1)
         """
         data=  torch.tensor(_data) 
-        print("a")
+        alphas = torch.tensor(_alphas)
         values = torch.zeros((len(data)),1)
-        print("b")
         policies= torch.zeros((len(data)),9)
-        print("c")
         model_ids = torch.tensor(_model_ids)
         output_idx = 0
         for id in range(len(models)):
             idx_by_model : torch.Tensor= torch.masked_select(torch.arange(len(data)), model_ids==id).long()
+
             batch_data= data[idx_by_model]
+            batch_alphas = alphas[idx_by_model]
+
             if len(batch_data)==0:
                 continue
+
             model = models[id] 
             model.eval()
             print("real model_id:",model.debug_id)
@@ -192,7 +203,7 @@ def callback(_data,models,_model_ids):
             # for i in range(100):
             model_value,model_policy = model(board)
     #        print(policy)
-            noised_policy = torch.tensor(dirichlet_noise(model_policy),dtype=torch.float32)
+            noised_policy = torch.tensor(dirichlet_noise(model_policy,alphas[idx_by_model]),dtype=torch.float32)
             values[idx_by_model]= model_value
             policies[idx_by_model]= noised_policy
             
@@ -272,15 +283,14 @@ def get_input():
             continue
 
 
-def play(iterations,threads,use_nn):
-
-    current_model = Agent(3,16,device) 
-    current_model.to(device)
-    current_model.load("cmodel")
+def play(iterations,threads,use_nn,model_name):
+    if use_nn:
+        current_model = Agent(3,16,device) 
+        current_model.to(device)
+        current_model.load(model_name)
 # &iterations_per_turn,&callback,&thread_count, &concurrent_games,&total_games, &use_nn, &return_last_move,&one_turn
 #boards, values ,policies, turns (who went), is terminals
     answer = input("Input in who you want to be (X/o)")
-    tracemalloc.start()
      
     if answer.strip().lower()=="o":
         player_turn = O
@@ -306,7 +316,10 @@ def play(iterations,threads,use_nn):
             
         else:
     #&arg_model1,&arg_model2,&iterations_per_turn,&callback,&thread_count, &concurrent_games,&total_games,&use_nn_,&return_last_move,&one_turn,&starting_position,&starting_turn)){
-            boards, values, policies, turns, is_terminals,winner_tally, tie_tally = tictactoelib.play_multiple_games(current_model,current_model,iterations,callback,threads,1,1,use_nn,True,True,board,op_turn(player_turn))
+            if use_nn:
+                boards, values, policies, turns, is_terminals,winner_tally, tie_tally = tictactoelib.play_multiple_games(current_model,current_model,iterations,callback,threads,1,1,use_nn,True,True,board,op_turn(player_turn),4)
+            else:
+                boards, values, policies, turns, is_terminals,winner_tally, tie_tally = tictactoelib.play_multiple_games(None,None,iterations,callback,threads,1,1,use_nn,True,True,board,op_turn(player_turn),4)
             if len(boards)>1:
                 board = boards[1]
             print(is_terminals) 
@@ -318,18 +331,18 @@ def play(iterations,threads,use_nn):
 
 
 
-def train(self_learn: bool,iterations,games_at_once,threads,mem_size): 
+def train(self_learn: bool,iterations,games_at_once,threads,mem_size,model_name): 
     if games_at_once< threads:
         raise Exception("games_at_once needs to be less than threads")
-
+    
     current_model = Agent(3,16,device) 
     current_model.to(device)
-    current_model.load("cmodel")
+    current_model.load(model_name)
     current_model.debug_id ="good model" 
 
     old_model = Agent(3,16,device) 
     old_model.to(device)
-    old_model.load("badmodel")
+    old_model.load(model_name)
 
     old_model.debug_id ="bad model" 
 
@@ -344,10 +357,17 @@ def train(self_learn: bool,iterations,games_at_once,threads,mem_size):
         inverted_policies = []
         inverted_values = []
 #&arg_model1,&arg_model2,&iterations_per_turn,&callback,&thread_count, &concurrent_games,&total_games,&use_nn_,&return_last_move,&one_turn,&starting_position,&starting_turn)){
-        boards, values, policies, turns, is_terminals,winner_tally, tie_tally = tictactoelib.play_multiple_games(current_model,old_model,iterations,callback,1,threads,games_at_once,self_learn,False,False,None,0)
-        print(boards,values,policies,turns,is_terminals,winner_tally,tie_tally)
+        boards, values, policies, turns, is_terminals,winner_tally, tie_tally = tictactoelib.play_multiple_games(current_model,old_model,iterations,callback,1,threads,games_at_once,self_learn,False,False,None,0,1.414)
+        print(winner_tally,tie_tally)
+        if (winner_tally+tie_tally/2)/games_at_once> .6:
+            print("IMPROVEMENT!!!")
+            old_model.load_state_dict(current_model.state_dict())
+            
+
         board_dataset = 0
         #invert boards
+
+
         for board,value,policy,turn,is_terminal in zip(boards,values,policies,turns,is_terminals):
             if turn==O:
                 inverted_boards.append(invert_board(board))
@@ -367,7 +387,6 @@ def train(self_learn: bool,iterations,games_at_once,threads,mem_size):
             print(p,sum(p))
             print(is_terminal)
             print()
-
         optim = torch.optim.Adam(current_model.parameters(),lr=.001)
 
         train_values = torch.tensor(inverted_values).view(-1,1)
@@ -390,6 +409,8 @@ def train(self_learn: bool,iterations,games_at_once,threads,mem_size):
 
             for idx,sample in enumerate(data_loader):
                 
+                if (winner_tally+tie_tally/2)/games_at_once> .6:
+                    print("IMPROVEMENT!!!")
                 batch_policies = sample[1]
                 batch_values = sample[2]
                 batch_boards = sample[0]
@@ -410,11 +431,71 @@ def train(self_learn: bool,iterations,games_at_once,threads,mem_size):
             print(loss)
             print("not !!!saving")
             print(current_model)
-            current_model.save("cmodel")
+            current_model.save(model_name)
             print("saved")
         a=[[0,0,0] for i in range(3)]
-play(25,5,True)
-#train(False,50,500,1,45000)
+
+
+def print_help():
+
+    BOLD = '\033[1m'
+    ITALICS = '\x1B[3m'
+    END = '\033[0m'
+    print("""ALPHAZERO TICTACTOE
+ 
+ARGUMENTS
+    """+BOLD+"run.py play"+END+ITALICS+" total_iterations threads"""+END+""" [model_name (leave blank if not using machine learning)]"""+END+BOLD+"""
+    run.py train"""+END+ITALICS+""" iterations_per_training_game simultaneous_games threads memory_size model_name"""+ END+""" [self_learn=true]
+          """)
+
+
+if __name__ == "__main__":
+    import sys
+
+    parser = argparse.ArgumentParser()
+
+    if len(sys.argv)==1:
+        print_help()        
+        sys.exit(0)
+    if sys.argv[1]=="train":
+        try:
+            iterations = int(sys.argv[2])
+            games_at_once= int(sys.argv[3])
+            threads= int(sys.argv[4])
+            memory_size = int(sys.argv[5])
+            model_name =(sys.argv[6])
+            self_learn = True
+            if len(sys.argv)>=8:
+                self_learn=False if sys.argv[7].strip().lower()=="false" else True
+        except:
+            print_help()
+            raise Exception("FAILED TO PARSE ARGUMENTS")
+            sys.exit(0)
+        train(self_learn,iterations,games_at_once,threads,memory_size,model_name)
+
+    elif sys.argv[1]=="play":
+
+        try:
+            total_iterations = int(sys.argv[2])
+            threads = int(sys.argv[3])
+            use_nn = False
+            model_name = ""
+            if len(sys.argv)>=5:
+                use_nn = True
+                model_name = sys.argv[4]
+        except:
+            print_help()
+            print("FAILED TO PARSE ARGUMENTS")
+            sys.exit(0)
+        play(total_iterations,threads,use_nn,model_name)
+    else: 
+        print_help()
+        print("FAILED TO PARSE ARGUMENTS .NEED TO PLAY OR TRAIN.")
+
+    sys.exit(0)
+#train(True,25,250,50,9000,"zeromodel")
+#train(False,50,100,5,4500)
+#train(self_learn: bool,iterations,games_at_once,threads,mem_size)
 #train(True,1025,5,1000)
 0/0
 t = DequeDataset(3,(1,),(2,))
