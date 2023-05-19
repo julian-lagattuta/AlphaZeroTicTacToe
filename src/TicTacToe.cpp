@@ -19,23 +19,46 @@
 using namespace std;
 void function_Py_DECREF(PyObject* o){
     Py_DECREF(o);
-    cout<<"decremented"<<endl;
 }
 
 void f_Py_DECREF(PyObject* o ,std::shared_ptr<ModelConcurrency> mc){
 
+    mc->fwrappers.make_call<4>(std::function(function_Py_DECREF),o);
     
-
-    auto& fw = mc->function_wrappers;
-    std::unique_lock<std::mutex> lock(fw.vec_mutex);
-    mc->function_wrappers.list_decref.push_back(function_call_wrapper<std::function<decltype(function_Py_DECREF)>>(function_Py_DECREF,o)) ;
-    std::unique_lock<std::mutex> flag_lock(fw.flag_mutex);
-    auto saved_flag = fw.flag;
-    lock.unlock();
+}
+PyObject* event_PyObject_CallObject(PyObject* o,PyObject* args ,std::shared_ptr<ModelConcurrency> mc){
+    return mc->fwrappers.make_call<8>(std::function(PyObject_CallObject),o,args);
+}
+long event_PyLong_AsLong(PyObject* l,std::shared_ptr<ModelConcurrency> mc){
+    return mc->fwrappers.make_call<7>(std::function(PyLong_AsLong),l);
+}
+PyObject* event_PyFloat_FromDouble(double  l,std::shared_ptr<ModelConcurrency> mc){
+    return mc->fwrappers.make_call<6>(std::function(PyFloat_FromDouble),l);
+}
+PyObject* event_PyLong_FromLong(long l,std::shared_ptr<ModelConcurrency> mc){
+    return mc->fwrappers.make_call<5>(std::function(PyLong_FromLong),l);
+}
+int event_PyList_Size(PyObject* list,std::shared_ptr<ModelConcurrency> mc){
+    return mc->fwrappers.make_call<3>(std::function(PyList_Size),list);
+}
+void event_PyList_Append(PyObject* list,PyObject* o ,std::shared_ptr<ModelConcurrency> mc){
+    mc->fwrappers.make_call<1>(std::function(PyList_Append),list,o);
+}
+PyObject* event_PyList_New(long i,std::shared_ptr<ModelConcurrency> mc){
+    return mc->fwrappers.make_call<0>(std::function(PyList_New),i);
+}
+double event_PyFloat_AsDouble(PyObject* i,std::shared_ptr<ModelConcurrency> mc){
+    return mc->fwrappers.make_call<10>(std::function(PyFloat_AsDouble),i);
+}
+PyObject* CPPPack(PyObject* a, PyObject* b, PyObject* c,PyObject* d){
+    return PyTuple_Pack(4,a,b,c,d);
+}
+PyObject* event_PyTuple_Pack( PyObject* a, PyObject* b, PyObject* c, PyObject* d,std::shared_ptr<ModelConcurrency> mc){
+    return mc->fwrappers.make_call<9>(std::function(CPPPack),a,b,c,d);
+}
+void event_PyList_SetItem(PyObject* list,long index,PyObject* o ,std::shared_ptr<ModelConcurrency> mc){
+    mc->fwrappers.make_call<2>(std::function(PyList_SetItem),list,index,o);
     
-    fw.cv.wait(flag_lock,[saved_flag,mc]{return saved_flag!=mc->function_wrappers.flag;});
-    flag_lock.unlock();
-
 }
 Turn opposite_turn(Turn t){
     if(t==Turn::X){
@@ -158,11 +181,36 @@ Turn TicTacToe::rollout(){
         copy.move(av[rand()%av.size()]);
     }
     
-    // copy.printBoard();
-    // cout<<copy.get_win_state()<<endl<<endl;
     return copy.get_win_state();
 }
 
+PyObject* board_to_list(TicTacToe& board,bool invert,std::shared_ptr<ModelConcurrency> mc){
+    PyObject* new_list =event_PyList_New(3,mc);
+    for(int y =0;y<3;y++){
+        auto line = event_PyList_New(3,mc);
+        PyList_SetItem(new_list,y,line);
+        for(int x=0;x<3;x++){
+            auto p = board.get_idx({x,y});
+            if(invert){ 
+                if(p==Turn::X){
+
+                    event_PyList_SetItem(line,x,event_PyLong_FromLong(Turn::O,mc),mc);
+                }else if(p==Turn::O){
+
+                    event_PyList_SetItem(line,x,event_PyLong_FromLong(Turn::X,mc),mc);
+                }else{
+
+                    event_PyList_SetItem(line,x,event_PyLong_FromLong(p,mc),mc);
+                }
+
+            }else{
+
+                    event_PyList_SetItem(line,x,event_PyLong_FromLong(p,mc),mc);
+            }
+        }
+    }
+    return new_list;
+}
 PyObject* TicTacToe::as_list(bool invert){
     auto state =PyGILState_Ensure();
     PyObject* new_list = PyList_New(3);
@@ -213,14 +261,17 @@ float Node::rollout(){
         if(board.get_win_state()==Turn::TIE) return 0;
         return -1;
     }
-    float alpha = &tree->head==this? 1: .01; 
+    float alpha = 0;
+    if(tree->is_training){
+        alpha = &tree->head==this? 1: .01; 
+    }else{
+        alpha = 0;
+    }
     auto value_policy  = tree->get_policy_and_value(board,tree->mc,tree->model_id,alpha);
     
-    // auto value_policy = make_tuple(5.0f,std::array<float,9>());
     float value = std::get<0>(value_policy);
     if(player==board.turn){
         value*=-1;
-//        cout<<"flipped value!"<<endl;
     }
     
     auto ret_policy = std::get<1>(value_policy);
@@ -263,11 +314,8 @@ float Node::child_uct(int idx){
     }
 
     float v = child->value.load()*mult;
-    if(child->virtual_loss.load()!=0){
-        // std::cout<<"virtual loss: "<<child->virtual_loss.load()<<endl;
-    }
     float sv = visits.load(); 
-    float uct = v/cv+sqrt(2*log(sv)/cv);//-child->virtual_loss.load()*tree->virtual_loss_coeff;
+    float uct = v/cv+sqrt(2*log(sv)/cv);
     return  uct;
 }
 Node* Node::highest_utc(){
@@ -300,10 +348,6 @@ Node* Node::highest_utc(){
         }
 
         float v = child->value.load()*mult;
-        if(child->virtual_loss.load()>1){
-             std::cout<<"virtual loss: "<<child->virtual_loss.load()<<endl;
-        
-        }
         float uct = 0;
 
         auto virtual_loss_value= child->virtual_loss.load()*tree->virtual_loss_coeff;
@@ -313,7 +357,6 @@ Node* Node::highest_utc(){
             
             uct = v/cv+tree->exploration_constant*sqrt(log(sv)/cv)-child->virtual_loss.load()*tree->virtual_loss_coeff;
         }
-        // float uct = v/cv+.2*sqrt(log(sv+1)/cv)*policy[child->action]-virtual_loss.load()*tree->virtual_loss_coeff
         if(uct>max_uct ){
             max_uct=uct;
             highest_node = child.get();
@@ -361,7 +404,6 @@ float Node::selection(){
     }
     
     if(!safe_done){
-        // cout<<"l"; 
         std::unique_lock lock(node_mutex);
         float ret_score=0;
         bool has_run = false;
@@ -374,14 +416,6 @@ float Node::selection(){
             return ret_score;
         }
     }
-    // if(spawning_children){
-    //     std::cout<<"bruh"<<endl;
-    // }
-    // spawning_children.wait(true);
-        // std::unique_lock lock(node_mutex);
-    // std::cout<<spawning_children<<endl;
-    // spawning_children
-    // std::shared_lock slock(node_mutex);
     assert(children.size()!=0); 
     // std::shared_lock slock(node_mutex);
     // under_shared.store(true);
@@ -396,14 +430,14 @@ float Node::selection(){
     under_shared.store(false);
     return score;
 }
-Tree::Tree(TicTacToe b,Turn p,std::shared_ptr<ModelConcurrency> model_concurrency): head(b,p,this,0), use_nn(false) {
+Tree::Tree(TicTacToe b,Turn p,std::shared_ptr<ModelConcurrency> model_concurrency,int _is_training): head(b,p,this,0), use_nn(false), is_training(_is_training) {
     if(model_concurrency.get()==nullptr){
         mc = make_shared<ModelConcurrency>();
     }else{
         mc = model_concurrency;
     }
 }
-Tree::Tree(TicTacToe b,Turn p,t_net_outputs net_func, PyObject* _callback,std::shared_ptr<ModelConcurrency> model_concurrency,int _model_id): head(b,p,this,0), get_policy_and_value(net_func), callback(_callback), use_nn(true) {
+Tree::Tree(TicTacToe b,Turn p,t_net_outputs net_func, PyObject* _callback,std::shared_ptr<ModelConcurrency> model_concurrency,int _model_id, int _is_training): head(b,p,this,0), get_policy_and_value(net_func), callback(_callback), use_nn(true), is_training(_is_training) {
 
     if(model_concurrency.get()==nullptr){
 
@@ -521,16 +555,10 @@ void send_to_model(PyObject* agent_function,std::shared_ptr<ModelConcurrency> mc
     
     auto batch_size = mc->vec.size();
     if(batch_size==0){
-        // std::cout<<"zero"<<endl;
         mc->flag=!mc->flag;
         return;
     }
-    PyGILState_STATE state;
-    state=  PyGILState_Ensure();
-    cout<<"batch size: "<<batch_size<<endl;
-    // cout<<"ensured"<<endl;
-    // std::cout<<"here"<<endl;
-    PyObject* pylist = PyList_New(mc->vec.size());
+    PyObject* pylist = event_PyList_New(mc->vec.size(),mc);
     auto& boards = mc->vec;
     for(int i = 0;i<batch_size;i++){
         auto& board =boards[i];
@@ -539,86 +567,65 @@ void send_to_model(PyObject* agent_function,std::shared_ptr<ModelConcurrency> mc
         auto invert =board.turn==Turn::X;
 
         inverts.push_back(invert);
-        PyList_SetItem(pylist,i,board.as_list(invert)); 
+        event_PyList_SetItem(pylist,i,board_to_list(board,invert,mc),mc); 
     }
     PyObject* values; //tensors
     PyObject* policies; //tensors
                         //
-    PyObject* models = PyList_New(mc->models.size());
+    PyObject* models = event_PyList_New(mc->models.size(),mc);
     int i =0;
     for(auto& model : mc->models){
-        PyList_SetItem(models,i,model);
+        event_PyList_SetItem(models,i,model,mc);
         Py_INCREF(model);
         i++;
     }
     assert(mc->model_ids.size()==batch_size);
-    PyObject* model_ids = PyList_New(mc->model_ids.size());
-    PyObject* alphas= PyList_New(mc->alphas.size());
+    PyObject* model_ids = event_PyList_New(mc->model_ids.size(),mc);
+    PyObject* alphas= event_PyList_New(mc->alphas.size(),mc);
 
     i=0;
     for(auto id: mc->model_ids){
-        PyList_SetItem(model_ids,i,PyLong_FromLong(id));
+        event_PyList_SetItem(model_ids,i,event_PyLong_FromLong(id,mc),mc);
         i++;
     }
     i=0;
     for(auto alpha: mc->alphas){
-        PyList_SetItem(alphas, i, PyFloat_FromDouble(alpha));
+        event_PyList_SetItem(alphas, i, event_PyFloat_FromDouble(alpha,mc),mc);
         i++;
     }
-    PyObject* parameters = PyTuple_Pack(4,pylist,models,model_ids,alphas);
+    PyObject* parameters = event_PyTuple_Pack(pylist,models,model_ids,alphas,mc);
 
-    PyGILState_Release(state);
 
-    PyObject* result = PyObject_CallObject(agent_function,parameters);
+    PyObject* result = event_PyObject_CallObject(agent_function,parameters,mc);
     
-    state = PyGILState_Ensure();
 
-    Py_DECREF(parameters);
+    f_Py_DECREF(parameters,mc);
 
-    cout<<"model ids"<<endl; 
-    delete_pyobject(model_ids);
-    cout<<"models"<<endl; 
-    delete_pyobject(models);
-    cout<<"pylist"<<endl; 
-    delete_pyobject(pylist); 
+    f_Py_DECREF(model_ids,mc);
+    f_Py_DECREF(models,mc);
+    f_Py_DECREF(pylist,mc); 
 
-    Py_DECREF(alphas);
-    
-    PyErr_Occurred();
-    if (PyErr_Occurred()) {
-        std::cout<<"bruhh! error"<<std::endl;
-        PyErr_Print();
-        PyErr_Clear(); // this will reset the error indicator so you can run Python code again
-    } 
+    f_Py_DECREF(alphas,mc);
     if(!PyArg_ParseTuple(result,"OO",&values,&policies)){
         cout<<"trouble parsing rip"<<endl;
     }
-    // cout<<"parsed args"<<endl;
     for(int i = 0;i<batch_size;i++){
         auto policy_value = PolicyValue();
         mc->ret_values.push_back(policy_value);
         for(int k=0;k<9;k++){
-            mc->ret_values.q[i].policy[k]=PyFloat_AsDouble(PyList_GetItem(PyList_GetItem(policies,i),k));
-            // std::cout<<mc->ret_values.q[i].policy[k];
+            mc->ret_values.q[i].policy[k]=event_PyFloat_AsDouble(PyList_GetItem(PyList_GetItem(policies,i),k),mc);
         }
-        // std::cout<<endl;
         mc->ret_values.q[i].value = PyFloat_AsDouble(PyList_GetItem(values,i));
-        // cout<<mc->ret_values.q[i].value <<endl;
     }
-    delete_pyobject(result);
+    f_Py_DECREF(result,mc);
 
-    PyGILState_Release(state);
-    // cout<<"real batch_size: "<<mc->vec.size()<<endl; 
     mc->vec.clear();
     mc->model_ids.clear();
     mc->alphas.clear();
-    // cout<<mc->counter<<endl;
     mc->flag=!mc->flag;
 
 
-    // cout<<"begin notify"<<endl;
     mc->cv.notify_all();
-    // cout<<"notified"<<endl;
     flag_lock.unlock();
     std::unique_lock waiting_lock(mc->counter_mutex);
     auto& k = mc->counter;
@@ -629,23 +636,6 @@ void send_to_model(PyObject* agent_function,std::shared_ptr<ModelConcurrency> mc
     assert((*temp_p)==batch_size);
 
 }
-/*
-void model_thread_func(std::shared_ptr<ModelConcurrency> mc,PyObject* callback,int delay){
-    int i =0;
-    while(!mc->done ){
-        // std::cout.flush(); 
-        
-        send_to_model(callback,mc);
-        i++;
-        
-        
-        // std::cout.flush(); 
-        std::this_thread::sleep_for(std::chrono::milliseconds(delay));
-    }
-    std::cout<<i<<endl;
-    
-}
-*/
 void Tree::run_dependent(int i, int thread_count,std::shared_ptr<ModelConcurrency> mc){
     try {
     std::atomic<int> iter_counter;
@@ -659,36 +649,15 @@ void Tree::run_dependent(int i, int thread_count,std::shared_ptr<ModelConcurrenc
     for(auto& t:threads){
         t.join();
     }
+#ifdef DEBUG
     std::cout<<"done!"<<iter_counter.load()<<endl;
-
+#endif
     }catch (const std::exception &exc)
     {
-    // catch anything thrown within try block that derives from std::exception
         std::cerr << exc.what();
     }
 
     }
-/*
-void Tree::run_independent(int i, int thread_count){
-    mc= make_shared<ModelConcurrency>();
-    std::atomic<int> iter_counter;
-    // std::thread(&Tree::run_thread,this,i).join();
-    std::vector<std::thread> threads;
-    auto model_thread =std::thread(&model_thread_func,mc,callback,3);
-    for(int k =0;k<thread_count-1;k++){
-        threads.push_back(std::thread(&Tree::run_thread,this,i,&iter_counter));
-        // std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    }
-        std::thread(&Tree::run_thread,this,i,&iter_counter).join();
-    for(auto& t:threads){
-        t.join();
-    }
-    done=true;
-    model_thread.join(); 
-    std::cout<<"done!"<<endl;
-}
-*/
-
 TicTacToe Tree::make_play(){
     auto max_node = head.children[0].get();
 

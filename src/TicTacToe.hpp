@@ -1,6 +1,8 @@
 #pragma once
+#include <concepts>
 #include <iostream>
 #include "Python.h"
+#include "abstract.h"
 #include "floatobject.h"
 #include "listobject.h"
 #include "pystate.h"
@@ -15,7 +17,7 @@
 #include <atomic>
 #include <shared_mutex>
 #include <mutex>
-
+#include <type_traits>
 
 
 using std::shared_ptr;
@@ -140,6 +142,204 @@ public:
 };
 #define f_vector(f) std::vector<function_call_wrapper<std::function<decltype(f)>>>
 
+
+template< int I, class T >
+struct nthtype;
+ // base case
+template< class Head, class... Tail >
+struct nthtype<0, std::tuple<Head, Tail...>> {
+   using type = Head;
+};
+template<int I >
+struct nthtype<I, std::tuple<>> {
+   using type = void;
+};
+template< int I, class Head, class... Tail >
+struct nthtype<I, std::tuple<Head, Tail...>>
+    : nthtype<I-1, std::tuple<Tail...>> { };
+template<class T>
+struct return_type;
+
+template<class R, class... Args>
+struct return_type<std::function<R(Args...)>>{
+    using type = R;
+};
+
+
+template<class T>
+struct voided_return_type;
+
+template<class R, class... Args>
+struct voided_return_type<std::function<R(Args...)>>{
+    using type = R;
+};
+template<class... Args>
+struct voided_return_type<std::function<void(Args...)>>{
+    using type = void*;
+};
+
+template<class T, class B>
+struct cat_tuples;
+
+template<class... Args1,class... Args2>
+struct cat_tuples<std::tuple<Args1...>,std::tuple<Args2...>>{
+    using type = std::tuple<Args1...,Args2...>;
+};
+
+template<class A>
+struct return_types;
+
+template<>
+struct return_types<std::tuple<>>{
+    using type = std::tuple<>;
+};
+
+
+template<class Head, class... Tail>
+struct return_types<std::tuple<Head,Tail...>>{
+    using type = typename std::conditional_t<std::is_same_v<typename return_type<Head>::type, void>,
+    typename cat_tuples<
+            std::tuple<void*>,
+            typename return_types<std::tuple<Tail...>>::type
+        >::type,
+
+
+     typename cat_tuples<
+            std::tuple<typename return_type<Head>::type >,
+            typename return_types<std::tuple<Tail...>>::type
+        >::type
+     >;
+    
+};
+
+template<class... Args>
+class WrapperVectors{
+public:
+    WrapperVectors(){}
+    template<int id, class R, class... fArgs, std::enable_if_t<!std::is_void<R>::value,bool> = true>
+    R make_call(std::function<R(fArgs...)> func, fArgs... args){
+        
+        std::unique_lock<std::mutex> lock(vec_mutex);
+         
+        auto& vec = std::get<id>(tuples);
+        vec.push_back(function_call_wrapper<decltype(func)>(func,args...));;
+        auto idx = vec.size()-1;
+        std::unique_lock<std::mutex> flag_lock(flag_mutex);
+        auto saved_flag = flag;
+        lock.unlock();
+        
+        cv.wait(flag_lock,[saved_flag,this]{return saved_flag!=flag;});
+        flag_lock.unlock();
+
+        R ret_value = std::get<id>(ret_values)[idx];
+        std::unique_lock<std::mutex> cv_lock(cv_mutex);
+        counter++;
+        cv_lock.unlock(); 
+        cv.notify_all(); 
+        return ret_value;
+
+    }
+
+    template<int id, class... fArgs>
+    void make_call(std::function<void(fArgs...)> func, fArgs... args){
+        std::unique_lock<std::mutex> lock(vec_mutex);
+         
+        auto vec = std::get<id>(tuples);
+        vec.push_back(function_call_wrapper<decltype(func)>(func,args...));;
+        auto idx = vec.size()-1;
+        std::unique_lock<std::mutex> flag_lock(flag_mutex);
+        auto saved_flag = flag;
+        lock.unlock();
+        
+        cv.wait(flag_lock,[saved_flag,this]{return saved_flag!=flag;});
+        flag_lock.unlock();
+        //push_back(function_call_wrapper(func,args...));
+    }
+    //&& !std::is_void<std::invoke_result< std::tuple_element_t<I,std::tuple<Args...>> > >::value
+    
+    template<int I=0, std::enable_if_t<I < sizeof...(Args) && !std::is_void_v<typename return_type<typename nthtype<I,std::tuple<Args...>>::type>::type >  ,bool > = true>
+    int flush_iter(){
+
+        bool must_release = false;
+        if(std::get<I>(tuples).size()>0 && std::get<I>(tuples)[0].f.template target<decltype(PyObject_CallObject)>() == PyObject_CallObject){
+            must_release = true;
+            PyGILState_Release(state);
+        }
+
+        std::get<I>(ret_values).clear();
+        for(auto k : std::get<I>(tuples)){
+            std::get<I>(ret_values).push_back(k());
+        }
+
+        if(must_release){
+            state = PyGILState_Ensure();
+        }
+        int ret_value = std::get<I>(tuples).size() + flush_iter<I+1>();
+        std::get<I>(tuples).clear();
+        return ret_value;
+    }
+    template<int I, std::enable_if_t<I == sizeof...(Args), bool> = true>
+    int flush_iter(){
+        return 0;
+    }
+    
+    template<int I=0, std::enable_if_t<I < sizeof...(Args) && std::is_void_v<typename return_type<typename nthtype<I,std::tuple<Args...>>::type >::type >  ,bool> = true> 
+    int flush_iter(){
+        std::get<I>(ret_values).clear();
+        for(auto k : std::get<I>(tuples)){
+                     
+            k();
+        }
+        int ret_value = std::get<I>(tuples).size() + flush_iter<I+1>();
+        std::get<I>(tuples).clear();
+        return ret_value;
+    }
+    
+    void flush(){
+        
+        
+        
+        state = PyGILState_Ensure(); 
+
+        std::unique_lock<std::mutex> vec_lock(vec_mutex);
+        std::unique_lock<std::mutex> flag_lock(flag_mutex);
+
+
+        int batch_size = flush_iter<0>();
+
+        PyGILState_Release(state);
+
+        flag = !flag;
+
+
+        counter =0;
+
+        cv.notify_all();
+
+
+
+        flag_lock.unlock();
+
+        auto temp_counter = &counter;
+        std::unique_lock<std::mutex> cv_lock(cv_mutex);
+        cv.wait(cv_lock,[temp_counter,batch_size]{return *temp_counter==batch_size;});
+        cv_lock.unlock();
+    
+
+    }
+
+
+    PyGILState_STATE state;
+    std::atomic<int> counter;
+    bool flag = false;
+    std::mutex cv_mutex;
+    std::mutex flag_mutex;
+    std::mutex vec_mutex;
+    std::condition_variable cv;
+    std::tuple<std::vector<function_call_wrapper<Args>>...> tuples;
+    std::tuple<std::vector<typename voided_return_type<Args>::type>...> ret_values;
+     
+};
 template<typename T>
 class SafeVector{
     public:
@@ -161,7 +361,9 @@ struct PolicyValue{
     float value;
 };
 
+#define dtype(a) std::function<decltype(a)>
 
+PyObject* CPPPack(PyObject* a, PyObject* b, PyObject* c,PyObject* d);
 void function_Py_DECREF(PyObject* o);
 struct ModelConcurrency{
     struct {
@@ -186,6 +388,9 @@ struct ModelConcurrency{
         std::mutex cv_mutex;
         
     } function_wrappers;
+
+
+    WrapperVectors<dtype(PyList_New),dtype(PyList_Append),dtype(PyList_SetItem),dtype(PyList_Size),dtype(function_Py_DECREF),dtype(PyLong_FromLong),dtype(PyFloat_FromDouble),dtype(PyLong_AsLong),dtype(PyObject_CallObject),dtype(CPPPack),dtype(PyFloat_AsDouble)> fwrappers;
     std::atomic<int> winner_tally;
     std::atomic<int> tie_tally;
 
@@ -220,9 +425,9 @@ struct ModelConcurrency{
 typedef std::tuple<float,std::array<float,9>> (*t_net_outputs)(TicTacToe&,std::shared_ptr<ModelConcurrency>,int,float);
 class Tree{
 public:
-    Tree(TicTacToe b,Turn p,t_net_outputs net_func, PyObject* _callback,std::shared_ptr<ModelConcurrency> model_concurrency,int _model_id);
+    Tree(TicTacToe b,Turn p,t_net_outputs net_func, PyObject* _callback,std::shared_ptr<ModelConcurrency> model_concurrency,int _model_id,int is_training);
 
-    Tree(TicTacToe b,Turn p,std::shared_ptr<ModelConcurrency> model_concurrency);
+    Tree(TicTacToe b,Turn p,std::shared_ptr<ModelConcurrency> model_concurrency,int is_training);
     void run_dependent(int iters,int threads,std::shared_ptr<ModelConcurrency> mc);
     void run_independent(int iters,int threads);
     void run_thread(int i,std::atomic<int>* iter_count);
@@ -234,6 +439,7 @@ public:
     std::shared_ptr<ModelConcurrency> mc;
     bool done=false;
     bool use_nn = false;
+    int is_training = 1;
     int model_id;
     float exploration_constant = 1.414;
 private:
@@ -253,7 +459,6 @@ ostream& operator<< (ostream& out, const vector<T>& v) {
 }
 
 
-
 void send_to_model(PyObject* agent_function,std::shared_ptr<ModelConcurrency> mc);
 bool send_to_python(std::shared_ptr<ModelConcurrency> mc);
 
@@ -261,3 +466,15 @@ bool send_to_python(std::shared_ptr<ModelConcurrency> mc);
 Turn opposite_turn(Turn t);
 
 void f_Py_DECREF(PyObject* o,std::shared_ptr<ModelConcurrency> mc);
+PyObject* board_to_list(TicTacToe& board,bool invert,std::shared_ptr<ModelConcurrency> mc);
+PyObject* event_PyObject_CallObject(PyObject* o,PyObject* args ,std::shared_ptr<ModelConcurrency> mc);
+long event_PyLong_AsLong(PyObject* l,std::shared_ptr<ModelConcurrency> mc);
+PyObject* event_PyFloat_FromDouble(double  l,std::shared_ptr<ModelConcurrency> mc);
+PyObject* event_PyLong_FromLong(long l,std::shared_ptr<ModelConcurrency> mc);
+int event_PyList_Size(PyObject* list,std::shared_ptr<ModelConcurrency> mc);
+void event_PyList_Append(PyObject* list,PyObject* o ,std::shared_ptr<ModelConcurrency> mc);
+PyObject* event_PyList_New(long i,std::shared_ptr<ModelConcurrency> mc);
+double event_PyFloat_AsDouble(PyObject* i,std::shared_ptr<ModelConcurrency> mc);
+PyObject* CPPPack(PyObject* a, PyObject* b, PyObject* c,PyObject* d);
+PyObject* event_PyTuple_Pack(std::shared_ptr<ModelConcurrency> mc, PyObject* a, PyObject* b, PyObject* c, PyObject* d);
+void event_PyList_SetItem(PyObject* list,long index,PyObject* o ,std::shared_ptr<ModelConcurrency> mc);

@@ -45,8 +45,6 @@ std::tuple<float,std::array<float,9>> agent_callback(TicTacToe& board,std::share
 
     
     
-    // std::cout<<"add"<<endl;
-    //received data
     std::array<float,9> policy = mc->ret_values.q.at(idx).policy;
     float value = mc->ret_values.q.at(idx).value;
 
@@ -62,7 +60,7 @@ ostream& operator<<(ostream& o, const array<T, N>& arr)
     copy(arr.cbegin(), arr.cend(), ostream_iterator<T>(o, " "));
     return o;
 }
-
+/*
 long event_PyLong_AsLong(PyObject* l,std::shared_ptr<ModelConcurrency> mc){
     
     
@@ -205,6 +203,9 @@ PyObject* event_PyList_New(int i,std::shared_ptr<ModelConcurrency> mc){
 
 
 }
+*/
+
+
 TicTacToe list_to_board(PyObject* board_list){
 
     TicTacToe t;
@@ -229,34 +230,7 @@ TicTacToe list_to_board(PyObject* board_list,std::shared_ptr<ModelConcurrency> m
     }
     return t;
 }
-PyObject* board_to_list(TicTacToe& board,bool invert,std::shared_ptr<ModelConcurrency> mc){
-    PyObject* new_list =event_PyList_New(3,mc);
-    for(int y =0;y<3;y++){
-        auto line = event_PyList_New(3,mc);
-        PyList_SetItem(new_list,y,line);
-        for(int x=0;x<3;x++){
-            auto p = board.get_idx({x,y});
-            if(invert){ 
-                if(p==Turn::X){
-
-                    event_PyList_SetItem(line,x,event_PyLong_FromLong(Turn::O,mc),mc);
-                }else if(p==Turn::O){
-
-                    event_PyList_SetItem(line,x,event_PyLong_FromLong(Turn::X,mc),mc);
-                }else{
-
-                    event_PyList_SetItem(line,x,event_PyLong_FromLong(p,mc),mc);
-                }
-
-            }else{
-
-                    event_PyList_SetItem(line,x,event_PyLong_FromLong(p,mc),mc);
-            }
-        }
-    }
-    return new_list;
-}
-void play_game(bool one_turn, int iterations_per_turn,int threads,bool return_last_move,PyObject* callback,PyObject* policies,PyObject* values,PyObject* boards,PyObject* turns,PyObject* is_terminals,std::mutex* list_mutex,std::shared_ptr<ModelConcurrency> mc,bool use_nn,PyObject* starting_position,int starting_turn,float exploration_constant){
+void play_game(bool one_turn, int iterations_per_turn,int threads,bool return_last_move,PyObject* callback,PyObject* policies,PyObject* values,PyObject* boards,PyObject* turns,PyObject* is_terminals,std::mutex* list_mutex,std::shared_ptr<ModelConcurrency> mc,bool use_nn,PyObject* starting_position,int starting_turn,float exploration_constant, int is_training){
     TicTacToe board = TicTacToe();
 
 
@@ -298,20 +272,15 @@ void play_game(bool one_turn, int iterations_per_turn,int threads,bool return_la
     
     int model_id=std::chrono::system_clock::now().time_since_epoch().count()%2;
     int x_model_id = model_id;
-    cout<<"x model_id: "<<x_model_id<<endl;
+
     using std::cout;
     do{
-        Tree t(board,board.turn,agent_callback,callback,mc,model_id);
+        Tree t(board,board.turn,agent_callback,callback,mc,model_id,is_training);
 
         t.exploration_constant = exploration_constant;
         t.use_nn = use_nn;
         t.run_dependent(iterations_per_turn,threads,mc);
 
-        cout<<"values: ";
-        for(auto& child: t.head.children){
-            cout<<child->value<<" ";
-        }
-        cout<<endl;
             // code that could cause exception
         auto move = t.make_play();
 
@@ -323,11 +292,9 @@ void play_game(bool one_turn, int iterations_per_turn,int threads,bool return_la
         }
         int sum= 0;
         for(int i=0;i<t.head.children.size();i++){
-            // cout<<t.head.children[i]->value.load()/t.head.children[i]->visits.load()<<" "<<t.head.children[i]->visits.load()<<", ";
             sum+=t.head.children[i]->visits.load();
             PyList_SetItem(policy_list,t.head.children[i]->action,event_PyFloat_FromDouble(float(t.head.children[i]->visits.load())/float(iterations_per_turn-1),mc));
         }
-        cout<<"total iterations: "<<sum<<endl;
 
         event_PyList_Append(policies,policy_list,mc);
         f_Py_DECREF(policy_list,mc);
@@ -388,6 +355,9 @@ void test_func(){
     auto a= PyGILState_Ensure(); 
     PyGILState_Release(a);
 }
+
+
+
 static PyObject* play_multiple_games(PyObject* self, PyObject* args){
     
     PyObject* arg_model1; 
@@ -403,15 +373,15 @@ static PyObject* play_multiple_games(PyObject* self, PyObject* args){
     int one_turn;
     int starting_turn;
     float exploration_constant;
+    int is_training;
 
-    if(!PyArg_ParseTuple(args,"OOnOnnnpppOlf",&arg_model1,&arg_model2,&iterations_per_turn,&callback,&thread_count, &concurrent_games,&total_games,&use_nn_,&return_last_move,&one_turn,&starting_position,&starting_turn,&exploration_constant)){
+    if(!PyArg_ParseTuple(args,"OOnOnnnpppOlfp",&arg_model1,&arg_model2,&iterations_per_turn,&callback,&thread_count, &concurrent_games,&total_games,&use_nn_,&return_last_move,&one_turn,&starting_position,&starting_turn,&exploration_constant,&is_training)){
 
 
         return NULL;
     }
     PyObject* model1=  arg_model1;
     PyObject* model2 = arg_model2==Py_None ? model1 : arg_model2;
-    cout<<"using use_nn "<<use_nn_<<endl;
     if(!use_nn_&& (model1!=Py_None || model2!=Py_None)){
          cout<<"WARNING: inputted model when use_nn is false"<<endl;
     }else if(use_nn_&& model1==Py_None){
@@ -431,10 +401,11 @@ static PyObject* play_multiple_games(PyObject* self, PyObject* args){
     model_concurrency->models.push_back(model1);
     model_concurrency->models.push_back(model2);
     
+    
     std::vector<std::future<void>> futures;
-    auto play_game_loop =[iterations_per_turn,thread_count,callback,policies,values,boards,&list_mutex,model_concurrency,&game_counter,total_games,use_nn_,turns,return_last_move,is_terminals,one_turn,starting_position,starting_turn,model_ids,exploration_constant](int model_id){
+    auto play_game_loop =[iterations_per_turn,thread_count,callback,policies,values,boards,&list_mutex,model_concurrency,&game_counter,total_games,use_nn_,turns,return_last_move,is_terminals,one_turn,starting_position,starting_turn,model_ids,exploration_constant,is_training](int model_id){
         for(;game_counter.fetch_add(1)<total_games;){
-            play_game(one_turn,iterations_per_turn,thread_count,return_last_move,callback,policies,values,boards,turns,is_terminals,&list_mutex,model_concurrency,use_nn_,starting_position,starting_turn,exploration_constant);
+            play_game(one_turn,iterations_per_turn,thread_count,return_last_move,callback,policies,values,boards,turns,is_terminals,&list_mutex,model_concurrency,use_nn_,starting_position,starting_turn,exploration_constant,is_training);
         }
     };
 
@@ -442,14 +413,39 @@ static PyObject* play_multiple_games(PyObject* self, PyObject* args){
         futures.push_back(std::async(std::launch::async,play_game_loop,k%2));
     }
     bool break_while  = false;
+    bool terminate_thread=  false;
     int futures_left = futures.size();
+    auto send_to_model_loop = [](PyObject* callback, std::shared_ptr<ModelConcurrency> mc,bool* terminate_thread){
+        while(!(*terminate_thread)){
+            send_to_model(callback,mc);
+            std::this_thread::sleep_for(2ms); 
+        }
+    };
+    
+    auto model_thread = std::thread(send_to_model_loop,callback,model_concurrency,&terminate_thread);
+    while(!break_while){
+        model_concurrency->fwrappers.flush();
+        futures_left = futures.size();
+        break_while = true;
+        for(auto& f : futures){
+            if(f.wait_for(0ms) != std::future_status::ready){
+                break_while = false;
+                futures_left--;
+            }
+        }
+    }
+    terminate_thread = true;
+    model_thread.join();
+    /*
     while(!break_while){
         send_to_model(callback,model_concurrency);
         while(send_to_python(model_concurrency)){
-            volatile int delay_timer = 1000;
+            volatile int delay_timer = 100000;
             while(send_to_python(model_concurrency)){
                 volatile int second_timer = 1000;
-                while(--second_timer);
+                while(--second_timer){
+                    send_to_python(model_concurrency);
+                };
             }
             while(--delay_timer);
         }
@@ -471,7 +467,9 @@ static PyObject* play_multiple_games(PyObject* self, PyObject* args){
                 futures_left--;
             }
         }
-    }
+        }
+        */
+    
 
     //board, winner
     PyObject* return_value = Py_BuildValue("OOOOOll",boards,values,policies,turns,is_terminals,model_concurrency->winner_tally.load(),model_concurrency->tie_tally.load());
@@ -480,7 +478,6 @@ static PyObject* play_multiple_games(PyObject* self, PyObject* args){
     Py_DECREF(policies);
     Py_DECREF(turns);
     Py_DECREF(is_terminals);
-    cout<<"boards ref count: "<<boards->ob_refcnt<<endl; 
     return return_value;
 
 }
@@ -519,12 +516,6 @@ static struct PyModuleDef ticmod{
 
 };
 PyMODINIT_FUNC PyInit_tictactoelib(void){
-    // std::set_terminate(__gnu_cxx::__verbose_terminate_handler);
-        // std::cout<<"init threads"<<endl;
-    // PyImport_ImportModule("threading"),
-    // cout<<"my bruh"<<endl;
-
-
     if (!PyEval_ThreadsInitialized())
     {
         PyEval_InitThreads();
